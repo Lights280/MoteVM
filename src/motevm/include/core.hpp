@@ -60,8 +60,11 @@ namespace CORE
 struct StackFrame
 {
     dword returnAddress = 0;
-    byte returnRegister = 0;                            // CALL's dest register
-    std::array<dword, ISA::REGISTER_COUNT> registers{}; // value-initialized
+    byte returnRegister = 0; // CALL's dest register
+    // Not value-initialized: CALL fills [0, copyExtent) from the caller and the
+    // root frame is zeroed explicitly in Core::run. Slots above copyExtent are
+    // unreachable by valid bytecode (see Core::computeCopyExtents).
+    std::array<dword, ISA::REGISTER_COUNT> registers;
     StackFrame(dword returnAddress = 0, byte returnRegister = 0)
         : returnAddress(returnAddress), returnRegister(returnRegister) {}
 };
@@ -74,10 +77,8 @@ private:
     std::span<const PARSE::Function> functionTable; // borrowed from Parse::Image
     std::span<const CORE::HostSlot> hostSlots;      // borrowed; bound by the loader (ADR-018)
     std::vector<StackFrame> callStack; // contiguous; back() is the active frame
-    dword programCounter = 0;
-    // alias
-    dword &pc = programCounter;
-    StackFrame *nowFrame = nullptr;
+    std::vector<word> copyExtent;      // per FUNCS entry: registers to copy on CALL
+    dword programCounter = 0;          // synced from the loop-local pc at boundaries
     int status = 0;
     int lastError = CORE::OK;
     dword lastErrorPc = 0; // instruction that reported lastError (debugger context)
@@ -99,9 +100,13 @@ private:
     dword asBits(const float &a);
     word merge(byte high, byte low);
 
-    int saveContext(dword returnAddress, byte returnRegister);
-    int takeContext(dword value);
-    int step(byte instruction, byte op1, byte op2, byte op3); // process 1 instruction
+    int saveContext(StackFrame *&frame, dword returnAddress, byte returnRegister, word copyCount);
+    int takeContext(StackFrame *&frame, dword &pc, dword value);
+    int step(StackFrame *&frame, dword &pc, dword &executedLocal, byte instruction, byte op1,
+             byte op2, byte op3); // process 1 instruction
+    template <bool Guarded>
+    int execute(StackFrame *&frame, dword &pc, dword &executedLocal);
+    void computeCopyExtents(void);
 
 public:
     Core() = default;

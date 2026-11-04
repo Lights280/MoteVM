@@ -1,7 +1,10 @@
 #include "core.hpp"
+#include "verifier.hpp"
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -9,6 +12,22 @@ namespace
 {
     const dword FLOAT_SIGN_BIT = 0x80000000u;
     const dword FLOAT_ABS_MASK = 0x7fffffffu;
+
+    // Internal loop signals. They never escape Core::run(), so they stay out of
+    // the public CORE:: error range.
+    const int STEP_HALT = 0x100;
+    const int STEP_HOSTCALL = 0x101;
+
+    // Single 32-bit, host-endianness-independent instruction fetch.
+    inline dword loadWord(const byte *p)
+    {
+        dword value;
+        std::memcpy(&value, p, sizeof(value));
+        if constexpr (std::endian::native == std::endian::big)
+            value = (value >> 24) | ((value >> 8) & 0x0000ff00u) | ((value << 8) & 0x00ff0000u) |
+                    (value << 24);
+        return value;
+    }
 
     inline int signExtend16(word value)
     {
@@ -47,12 +66,13 @@ word Core::merge(byte high, byte low)
     return static_cast<word>((high << 8) | low);
 }
 
-int Core::step(byte instruction, byte op1, byte op2, byte op3)
+int Core::step(StackFrame *&frame, dword &pc, dword &executedLocal, byte instruction, byte op1,
+               byte op2, byte op3)
 {
-    if (nowFrame == nullptr)
+    if (frame == nullptr)
         return CORE::NO_ACTIVE_FRAME;
 
-    std::array<dword, ISA::REGISTER_COUNT> &reg = nowFrame->registers;
+    std::array<dword, ISA::REGISTER_COUNT> &reg = frame->registers;
     int result = CORE::OK;
     switch (static_cast<int>(instruction))
     {
@@ -60,11 +80,11 @@ int Core::step(byte instruction, byte op1, byte op2, byte op3)
         reg[op1] = 0;
         break;
     case ISA::load:
-        if (memory->read(reg[op1], reg[op2] + op3) != MEMORY::OK)
+        if (memory->readAt(reg[op1], reg[op2], op3) != MEMORY::OK)
             result = CORE::MEMORY_FAULT;
         break;
     case ISA::sto:
-        if (memory->write(reg[op1], reg[op2] + op3) != MEMORY::OK)
+        if (memory->writeAt(reg[op1], reg[op2], op3) != MEMORY::OK)
             result = CORE::MEMORY_FAULT;
         break;
     case ISA::lhi:
@@ -300,7 +320,8 @@ int Core::step(byte instruction, byte op1, byte op2, byte op3)
             result = CORE::INVALID_TARGET;
             break;
         }
-        result = saveContext(pc, op1); // pc already points to the next instruction
+        // pc already points to the next instruction.
+        result = saveContext(frame, pc, op1, copyExtent[index]);
         if (result == CORE::OK)
             pc = target;
         break;
@@ -308,14 +329,17 @@ int Core::step(byte instruction, byte op1, byte op2, byte op3)
     case ISA::ret:
     {
         const dword value = reg[op1];
-        result = takeContext(value);
+        result = takeContext(frame, pc, value);
         if (result == CORE::NO_CALLER)
-            status = CORE::IDLE, result = CORE::OK;
+        {
+            status = CORE::IDLE;
+            return STEP_HALT;
+        }
         break;
     }
     case ISA::halt:
         status = CORE::IDLE; // stop execution
-        break;
+        return STEP_HALT;
     case ISA::breakpoint:
         break; // NOP without a debugger
     case ISA::trap:
@@ -335,9 +359,13 @@ int Core::step(byte instruction, byte op1, byte op2, byte op3)
             result = CORE::INVALID_IMPORT;
             break;
         }
+        // Make instructionCount()/currentPc() observable before entering host code.
+        executed += executedLocal;
+        executedLocal = 0;
+        programCounter = pc;
         const CORE::HostSlot &slot = hostSlots[index];
         reg[op1] = slot.function(slot.user, reg.data(), slot.arity);
-        break;
+        return STEP_HOSTCALL;
     }
     default:
         result = CORE::UNKNOWN_INSTRUCTION;
@@ -346,35 +374,49 @@ int Core::step(byte instruction, byte op1, byte op2, byte op3)
     return result;
 }
 
-int Core::saveContext(dword returnAddress, byte returnRegister)
+int Core::saveContext(StackFrame *&frame, dword returnAddress, byte returnRegister, word copyCount)
 {
-    if (nowFrame == nullptr)
+    if (frame == nullptr)
         return CORE::NO_ACTIVE_FRAME;
     if (callStack.size() >= CORE::MAX_CALL_DEPTH)
         return CORE::STACK_OVERFLOW;
-    StackFrame callee(returnAddress, returnRegister);
-    callee.registers = nowFrame->registers; // whole-window copy: arguments in r0..
-    callStack.push_back(std::move(callee));
-    nowFrame = &callStack.back(); // re-seat: vector growth may move the frames
+
+    // Grow geometrically, but always before taking a reference to the caller:
+    // a reallocation moves every frame and invalidates `frame`.
+    if (callStack.size() == callStack.capacity())
+    {
+        const std::size_t grown = std::max<std::size_t>(64, callStack.capacity() * 2);
+        callStack.reserve(std::min<std::size_t>(CORE::MAX_CALL_DEPTH, grown));
+        frame = &callStack.back();
+    }
+
+    callStack.emplace_back(returnAddress, returnRegister);
+    StackFrame &callee = callStack.back();
+    const dword count = std::min<dword>(copyCount, ISA::REGISTER_COUNT);
+    if (count != 0)
+        std::memcpy(callee.registers.data(), frame->registers.data(), count * sizeof(dword));
+    // Slots above `count` are never addressed by any reachable function (see
+    // computeCopyExtents), so leaving them indeterminate is safe.
+    frame = &callee;
     if (callStack.size() > peakDepth)
         peakDepth = callStack.size();
     return CORE::OK;
 }
 
-int Core::takeContext(dword value)
+int Core::takeContext(StackFrame *&frame, dword &pc, dword value)
 {
-    if (nowFrame == nullptr || callStack.empty())
+    if (frame == nullptr || callStack.empty())
         return CORE::NO_ACTIVE_FRAME;
-    const byte returnRegister = nowFrame->returnRegister;
-    const dword returnAddress = nowFrame->returnAddress;
+    const byte returnRegister = frame->returnRegister;
+    const dword returnAddress = frame->returnAddress;
     callStack.pop_back();
     if (callStack.empty())
     {
-        nowFrame = nullptr;
+        frame = nullptr;
         return CORE::NO_CALLER;
     }
-    nowFrame = &callStack.back();
-    nowFrame->registers[returnRegister] = value;
+    frame = &callStack.back();
+    frame->registers[returnRegister] = value;
     pc = returnAddress;
     return CORE::OK;
 }
@@ -390,7 +432,86 @@ int Core::attachModule(std::span<const byte> text, std::span<const PARSE::Functi
     if (attached != CORE::OK)
         return attached;
     functionTable = functions;
+    computeCopyExtents();
     return CORE::OK;
+}
+
+// Calls copy the caller's whole 256-register window today, but a function's
+// own operands are bounded by its declared regcnt. A callee can nevertheless
+// be reached from a smaller frame and legally read slots above that frame's
+// regcnt, so the copy extent must include every statically reachable callee:
+//
+//   copyExtent[f] = max(regcnt[f], copyExtent[g] for every CALL edge f -> g)
+//
+// The fixpoint reproduces the old full-window values for every reachable
+// register while letting ordinary functions copy only a handful of slots.
+// A function whose operands violate its declared regcnt (possible only via a
+// direct, unverified attachModule) gets the full 256-slot extent, which keeps
+// the previous behaviour exactly.
+void Core::computeCopyExtents(void)
+{
+    const std::size_t count = functionTable.size();
+    copyExtent.assign(count, 0);
+    if (count == 0)
+        return;
+
+    const std::size_t wordCount = text.size() / ISA::INSTRUCTION_SIZE;
+    std::vector<std::pair<dword, dword>> edges;
+    edges.reserve(count * 2);
+
+    for (std::size_t f = 0; f < count; ++f)
+    {
+        const PARSE::Function &fn = functionTable[f];
+        dword extent = fn.regcnt;
+        if (extent == 0 || extent > ISA::REGISTER_COUNT)
+            extent = ISA::REGISTER_COUNT;
+
+        const std::size_t begin = std::min<std::size_t>(fn.entry, wordCount);
+        const std::size_t end = std::min<std::size_t>(
+            static_cast<std::size_t>(fn.entry) + fn.instr, wordCount);
+        for (std::size_t i = begin; i < end; ++i)
+        {
+            const dword instruction = loadWord(text.data() + i * ISA::INSTRUCTION_SIZE);
+            const byte opcode = static_cast<byte>(instruction & ISA::OPCODE_MASK);
+            const PARSE::OpInfo *info = PARSE::opcodeInfo(opcode);
+            if (info == nullptr)
+            {
+                extent = ISA::REGISTER_COUNT;
+                break;
+            }
+            const byte a = static_cast<byte>((instruction >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
+            const byte b = static_cast<byte>((instruction >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
+            const byte c = static_cast<byte>((instruction >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
+            if (((info->regMask & 0x1) != 0 && a >= fn.regcnt) ||
+                ((info->regMask & 0x2) != 0 && b >= fn.regcnt) ||
+                ((info->regMask & 0x4) != 0 && c >= fn.regcnt))
+            {
+                extent = ISA::REGISTER_COUNT;
+                break;
+            }
+            if (opcode == ISA::call)
+            {
+                const dword target = (instruction >> 16) & 0xFFFFu;
+                if (target < count)
+                    edges.emplace_back(static_cast<dword>(f), target);
+            }
+        }
+        copyExtent[f] = static_cast<word>(extent);
+    }
+
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (const auto &edge : edges)
+        {
+            if (copyExtent[edge.first] < copyExtent[edge.second])
+            {
+                copyExtent[edge.first] = copyExtent[edge.second];
+                changed = true;
+            }
+        }
+    }
 }
 
 void Core::attachImports(std::span<const CORE::HostSlot> slots)
@@ -405,9 +526,9 @@ int Core::attachText(std::span<const byte> text)
     this->text = text;
     functionTable = {};
     hostSlots = {};
+    copyExtent.clear();
     callStack.clear();
     programCounter = 0;
-    nowFrame = nullptr;
     status = CORE::IDLE;
     lastError = CORE::OK;
     lastErrorPc = 0;
@@ -419,12 +540,133 @@ void Core::detachText(void)
     text = {};
     functionTable = {};
     hostSlots = {};
+    copyExtent.clear();
     callStack.clear();
     programCounter = 0;
-    nowFrame = nullptr;
     status = CORE::IDLE;
     lastError = CORE::OK;
     lastErrorPc = 0;
+}
+
+// Unguarded hot loop: no fuel, interrupt or debugger work. It returns only on
+// halt/root-ret, a hostcall (so run() can re-evaluate the guard state) or an
+// error. pc, the frame pointer and the instruction counter stay in locals.
+template <>
+int Core::execute<false>(StackFrame *&frame, dword &pc, dword &executedLocal)
+{
+    const byte *code = text.data();
+    const std::size_t size = text.size();
+    for (;;)
+    {
+        ++executedLocal;
+        if (static_cast<std::size_t>(pc) + ISA::INSTRUCTION_SIZE > size)
+        {
+            lastError = CORE::INVALID_TARGET;
+            lastErrorPc = pc;
+            return CORE::INVALID_TARGET;
+        }
+
+        const dword instructionPc = pc;
+        const dword word = loadWord(code + pc);
+        pc += ISA::INSTRUCTION_SIZE;
+
+        const int result = step(frame, pc, executedLocal, static_cast<byte>(word & ISA::OPCODE_MASK),
+                                static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK),
+                                static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK),
+                                static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK));
+        if (result == STEP_HALT)
+            return STEP_HALT;
+        if (result == STEP_HOSTCALL)
+        {
+            // A host function may have changed the guard state; only fall back
+            // to the guarded loop when that actually happened.
+            if (fuelLimit == 0 && interruptHook == nullptr && debugHook == nullptr)
+                continue;
+            return STEP_HOSTCALL;
+        }
+        if (result != CORE::OK)
+        {
+            lastError = result;
+            lastErrorPc = instructionPc;
+            return result;
+        }
+    }
+}
+
+// Guarded loop: preserves the historical check order exactly
+// (fuel -> executed -> interrupt -> bounds -> fetch -> debug -> dispatch).
+template <>
+int Core::execute<true>(StackFrame *&frame, dword &pc, dword &executedLocal)
+{
+    const byte *code = text.data();
+    const std::size_t size = text.size();
+    for (;;)
+    {
+        if (fuelLimit != 0) // 0 = unlimited
+        {
+            if (fuelLeft == 0)
+            {
+                lastError = CORE::FUEL_EXHAUSTED;
+                return CORE::FUEL_EXHAUSTED;
+            }
+            --fuelLeft;
+        }
+
+        ++executedLocal;
+        if (interruptHook != nullptr)
+        {
+            executed += executedLocal;
+            executedLocal = 0;
+            programCounter = pc;
+            if (interruptHook(interruptUser))
+            {
+                lastError = CORE::INTERRUPTED;
+                return CORE::INTERRUPTED;
+            }
+        }
+
+        if (static_cast<std::size_t>(pc) + ISA::INSTRUCTION_SIZE > size)
+        {
+            lastError = CORE::INVALID_TARGET;
+            lastErrorPc = pc;
+            return CORE::INVALID_TARGET;
+        }
+
+        const dword instructionPc = pc;
+        const dword word = loadWord(code + pc);
+
+        // The debugger hook sees pc of the unexecuted instruction and a counter
+        // that already includes it.
+        if (debugHook != nullptr)
+        {
+            executed += executedLocal;
+            executedLocal = 0;
+            programCounter = pc;
+            if (debugHook(debugUser, *this, pc, word))
+            {
+                lastError = CORE::DEBUG_BREAK;
+                lastErrorPc = pc;
+                return CORE::DEBUG_BREAK;
+            }
+        }
+
+        pc += ISA::INSTRUCTION_SIZE;
+
+        const int result = step(frame, pc, executedLocal, static_cast<byte>(word & ISA::OPCODE_MASK),
+                                static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK),
+                                static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK),
+                                static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK));
+        if (result == STEP_HALT)
+            return STEP_HALT;
+        if (result == STEP_HOSTCALL)
+            continue; // step() already synced executed/programCounter
+        if (result != CORE::OK)
+        {
+            lastError = result;
+            lastErrorPc = instructionPc;
+            return result;
+        }
+    }
 }
 
 void Core::run(dword functionIndex)
@@ -449,7 +691,7 @@ void Core::run(dword functionIndex)
         return;
     }
 
-    pc = functionTable[functionIndex].entry * ISA::INSTRUCTION_SIZE;
+    dword pc = functionTable[functionIndex].entry * ISA::INSTRUCTION_SIZE;
     if (static_cast<std::size_t>(pc) + ISA::INSTRUCTION_SIZE > text.size())
     {
         lastError = CORE::INVALID_TARGET;
@@ -457,66 +699,27 @@ void Core::run(dword functionIndex)
         return;
     }
 
-    callStack.emplace_back(); // root frame: zeroed registers, not saved via saveContext
-    nowFrame = &callStack.back();
+    if (callStack.capacity() < 64)
+        callStack.reserve(64);
+    callStack.emplace_back(); // root frame; zeroed explicitly below
+    StackFrame *frame = &callStack.back();
+    std::memset(frame->registers.data(), 0, sizeof(frame->registers));
     peakDepth = callStack.size();
     status = CORE::RUN;
 
-    while (status == CORE::RUN)
+    dword executedLocal = 0;
+    for (;;)
     {
-        if (fuelLimit != 0) // 0 = unlimited
-        {
-            if (fuelLeft == 0)
-            {
-                lastError = CORE::FUEL_EXHAUSTED;
-                break;
-            }
-            --fuelLeft;
-        }
-        ++executed;
-        if (interruptHook != nullptr && interruptHook(interruptUser))
-        {
-            lastError = CORE::INTERRUPTED;
-            break;
-        }
-
-        if (static_cast<std::size_t>(pc) + ISA::INSTRUCTION_SIZE > text.size())
-        {
-            lastError = CORE::INVALID_TARGET;
-            lastErrorPc = pc;
-            break;
-        }
-
-        const dword instructionPc = pc;
-        // Explicit little-endian decode to stay independent of host endianness.
-        const dword word = static_cast<dword>(text[pc]) |
-                           (static_cast<dword>(text[pc + 1]) << 8) |
-                           (static_cast<dword>(text[pc + 2]) << 16) |
-                           (static_cast<dword>(text[pc + 3]) << 24);
-
-        // Debugger hook: pc still points at the instruction that is about to run,
-        // so a stopped debugger sees "the next instruction to execute".
-        if (debugHook != nullptr && debugHook(debugUser, *this, pc, word))
-        {
-            lastError = CORE::DEBUG_BREAK;
-            lastErrorPc = pc;
-            break;
-        }
-
-        pc += ISA::INSTRUCTION_SIZE;
-
-        const int result = step(static_cast<byte>(word & ISA::OPCODE_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK));
-        if (result != CORE::OK)
-        {
-            lastError = result;
-            lastErrorPc = instructionPc;
-            break;
-        }
+        const bool guarded = fuelLimit != 0 || interruptHook != nullptr || debugHook != nullptr;
+        const int signal = guarded ? execute<true>(frame, pc, executedLocal)
+                                   : execute<false>(frame, pc, executedLocal);
+        if (signal == STEP_HOSTCALL)
+            continue; // re-evaluate which loop to use; step() synced the boundary
+        break;
     }
 
+    executed += executedLocal;
+    programCounter = pc;
     if (lastError == CORE::OK) // last executed instruction (debugger/trace post-mortem)
         lastErrorPc = pc >= ISA::INSTRUCTION_SIZE ? pc - ISA::INSTRUCTION_SIZE : 0;
     status = CORE::IDLE;

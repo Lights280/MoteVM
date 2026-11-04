@@ -3,9 +3,8 @@
 
 bool Memory::overflow(dword offset, dword size)
 {
-    const qword total = static_cast<qword>(MEMORY::BLOCK_COUNT) * MEMORY::BLOCK_SIZE;
     const qword end = static_cast<qword>(offset) + size;
-    return end > total;
+    return end > MEMORY::ADDRESS_SPACE;
 }
 
 int Memory::getBlockStatus(int index)
@@ -25,6 +24,7 @@ int Memory::allocate(int index)
         return MEMORY::OK; // idempotent
     blocks[index].pointer = std::make_shared<std::array<byte, MEMORY::BLOCK_SIZE>>();
     blocks[index].status = MEMORY::FREE;
+    bases[index] = blocks[index].pointer->data();
     return MEMORY::OK;
 }
 
@@ -32,6 +32,7 @@ void Memory::free(int index)
 {
     if (index < 0 || static_cast<size_t>(index) >= MEMORY::BLOCK_COUNT)
         return;
+    bases[index] = nullptr;
     blocks[index].pointer.reset();
     blocks[index].status = MEMORY::RELEASED;
 }
@@ -72,35 +73,24 @@ int Memory::readData(std::span<byte> buffer, int offset, int index)
 
 int Memory::write(const dword &buffer, dword offset)
 {
-    const dword valueSize = static_cast<dword>(sizeof(dword));
-    if (overflow(offset, valueSize))
-        return MEMORY::MEMORY_OVERFLOW;
-
-    const int blockIndex = hiword(offset);
-    const int blockOffset = loword(offset);
-    const byte *data = reinterpret_cast<const byte *>(&buffer);
-
-    if (static_cast<dword>(blockOffset) + valueSize <= MEMORY::BLOCK_SIZE)
-        return writeData(std::span<const byte>(data, valueSize), blockOffset, blockIndex);
-
-    // Handle the case where the value spans across two blocks
-    const dword firstBlockSize = static_cast<dword>(MEMORY::BLOCK_SIZE) - static_cast<dword>(blockOffset);
-    int result = writeData(std::span<const byte>(data, firstBlockSize), blockOffset, blockIndex);
-    if (result != MEMORY::OK)
-        return result;
-    return writeData(std::span<const byte>(data + firstBlockSize, valueSize - firstBlockSize),
-                     0, blockIndex + 1);
+    return writeAt(buffer, offset, 0);
 }
 
 int Memory::read(dword &buffer, dword offset)
 {
+    return readAt(buffer, offset, 0);
+}
+
+int Memory::readSlow(dword &value, qword address)
+{
     const dword valueSize = static_cast<dword>(sizeof(dword));
-    if (overflow(offset, valueSize))
+    if (address > MEMORY::ADDRESS_SPACE - valueSize)
         return MEMORY::MEMORY_OVERFLOW;
 
-    const int blockIndex = hiword(offset);
-    const int blockOffset = loword(offset);
-    byte *data = reinterpret_cast<byte *>(&buffer);
+    const dword offset = static_cast<dword>(address);
+    const int blockIndex = hiword(static_cast<int>(offset));
+    const int blockOffset = loword(static_cast<int>(offset));
+    byte *data = reinterpret_cast<byte *>(&value);
 
     if (static_cast<dword>(blockOffset) + valueSize <= MEMORY::BLOCK_SIZE)
         return readData(std::span<byte>(data, valueSize), blockOffset, blockIndex);
@@ -112,6 +102,29 @@ int Memory::read(dword &buffer, dword offset)
         return result;
     return readData(std::span<byte>(data + firstBlockSize, valueSize - firstBlockSize),
                     0, blockIndex + 1);
+}
+
+int Memory::writeSlow(dword value, qword address)
+{
+    const dword valueSize = static_cast<dword>(sizeof(dword));
+    if (address > MEMORY::ADDRESS_SPACE - valueSize)
+        return MEMORY::MEMORY_OVERFLOW;
+
+    const dword offset = static_cast<dword>(address);
+    const int blockIndex = hiword(static_cast<int>(offset));
+    const int blockOffset = loword(static_cast<int>(offset));
+    const byte *data = reinterpret_cast<const byte *>(&value);
+
+    if (static_cast<dword>(blockOffset) + valueSize <= MEMORY::BLOCK_SIZE)
+        return writeData(std::span<const byte>(data, valueSize), blockOffset, blockIndex);
+
+    // Handle the case where the value spans across two blocks
+    const dword firstBlockSize = static_cast<dword>(MEMORY::BLOCK_SIZE) - static_cast<dword>(blockOffset);
+    int result = writeData(std::span<const byte>(data, firstBlockSize), blockOffset, blockIndex);
+    if (result != MEMORY::OK)
+        return result;
+    return writeData(std::span<const byte>(data + firstBlockSize, valueSize - firstBlockSize),
+                     0, blockIndex + 1);
 }
 
 int Memory::writes(std::span<const byte> buffer, dword offset, dword size)
