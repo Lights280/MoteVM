@@ -76,9 +76,9 @@ private:
     std::span<const byte> text;
     std::span<const PARSE::Function> functionTable; // borrowed from Parse::Image
     std::span<const CORE::HostSlot> hostSlots;      // borrowed; bound by the loader (ADR-018)
-    std::vector<StackFrame> callStack; // contiguous; back() is the active frame
-    std::vector<word> copyExtent;      // per FUNCS entry: registers to copy on CALL
-    dword programCounter = 0;          // synced from the loop-local pc at boundaries
+    std::vector<StackFrame> callStack;              // contiguous; back() is the active frame
+    std::vector<word> copyExtent;                   // per FUNCS entry: registers to copy on CALL
+    dword programCounter = 0;                       // synced from the loop-local pc at boundaries
     int status = 0;
     int lastError = CORE::OK;
     dword lastErrorPc = 0; // instruction that reported lastError (debugger context)
