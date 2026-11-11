@@ -305,6 +305,24 @@ motevm_apply_warnings(motevm_core)
 motevm_apply_sanitizers(motevm_core)
 motevm_apply_arch(motevm_core)
 
+# MoteAR (.mtr) container: reader/validator/writer shared by motear (and,
+# later, an optional motevm native-load integration).
+set(MOTEVM_ARCHIVE_SOURCES
+    "${MOTEVM_SRC_DIR}/include/archive/archive.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/manifest.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/name.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/util.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/writer.cpp")
+
+add_library(motevm_archive STATIC ${MOTEVM_ARCHIVE_SOURCES})
+add_library(motevm::archive ALIAS motevm_archive)
+target_link_libraries(motevm_archive PUBLIC motevm_core)
+target_include_directories(motevm_archive PUBLIC "${MOTEVM_SRC_DIR}/include")
+target_compile_features(motevm_archive PUBLIC cxx_std_20)
+motevm_apply_warnings(motevm_archive)
+motevm_apply_sanitizers(motevm_archive)
+motevm_apply_arch(motevm_archive)
+
 set(MOTEVM_TOOL_SOURCES
     "${MOTEVM_SRC_DIR}/include/asm/assembler.cpp"
     "${MOTEVM_SRC_DIR}/include/asm/emitter.cpp"
@@ -376,6 +394,8 @@ if(MOTEVM_BUILD_TOOLS)
             target_link_libraries(${module_name} PRIVATE motevm_core)
         elseif(module_name STREQUAL "moteasm" OR module_name STREQUAL "motedis")
             target_link_libraries(${module_name} PRIVATE motevm_tools)
+        elseif(module_name STREQUAL "motear")
+            target_link_libraries(${module_name} PRIVATE motevm_archive motevm_tools)
         endif()
 
         list(APPEND MOTEVM_MODULE_TARGETS ${module_name})

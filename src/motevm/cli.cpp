@@ -8,6 +8,7 @@
 #include "memory.hpp"
 #include "parse.hpp"
 #include "workspace.hpp"
+#include "common/cli.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -933,7 +934,7 @@ int CLI::parse(int argc, char *argv[], Options &options)
     while (index < argc)
     {
         const std::string arg = argv[index];
-        if (arg == "--")
+        if (TOOL::isEndOfOptions(arg))
         {
             ++index;
             break;
@@ -960,63 +961,43 @@ int CLI::parse(int argc, char *argv[], Options &options)
             options.interactive = true;
         else if (arg == "--step")
             options.step = true;
-        else if (arg.rfind("--trace=", 0) == 0)
+        else if (TOOL::matchesOption(arg, "--trace"))
         {
-            if (!traceLevelValue(arg.substr(8), options.trace))
+            std::string value;
+            if (!TOOL::optionValue(arg, "--trace", argc, argv, index, value) ||
+                !traceLevelValue(value, options.trace))
                 return USAGE;
         }
-        else if (arg == "--trace")
+        else if (TOOL::matchesOption(arg, "--trace-file"))
         {
-            if (index + 1 >= argc || !traceLevelValue(argv[index + 1], options.trace))
-                return USAGE;
-            ++index;
-        }
-        else if (arg.rfind("--trace-file=", 0) == 0)
-        {
-            if (arg.size() == 13)
-                return USAGE;
-            options.traceFile = arg.substr(13);
-        }
-        else if (arg == "--trace-file")
-        {
-            if (index + 1 >= argc || argv[index + 1] == nullptr || argv[index + 1][0] == '\0')
-                return USAGE;
-            options.traceFile = argv[++index];
-        }
-        else if (arg.rfind("--trace-limit=", 0) == 0)
-        {
-            if (!dwordValue(arg.substr(14), options.traceLimit))
+            if (!TOOL::optionValue(arg, "--trace-file", argc, argv, index,
+                                   options.traceFile))
                 return USAGE;
         }
-        else if (arg == "--trace-limit")
+        else if (TOOL::matchesOption(arg, "--trace-limit"))
         {
-            if (index + 1 >= argc || !dwordValue(argv[index + 1], options.traceLimit))
+            std::string value;
+            if (!TOOL::optionValue(arg, "--trace-limit", argc, argv, index, value) ||
+                !dwordValue(value, options.traceLimit))
                 return USAGE;
-            ++index;
         }
-        else if (arg.rfind("--break=", 0) == 0)
+        else if (TOOL::matchesOption(arg, "--break"))
         {
-            if (arg.size() == 8)
+            std::string value;
+            if (!TOOL::optionValue(arg, "--break", argc, argv, index, value))
                 return USAGE;
-            options.breakpoints.emplace_back(arg.substr(8));
+            options.breakpoints.emplace_back(std::move(value));
         }
-        else if (arg == "--break")
+        else if (arg == "-w" || TOOL::matchesOption(arg, "--workspace"))
         {
-            if (index + 1 >= argc || argv[index + 1] == nullptr || argv[index + 1][0] == '\0')
+            std::string value;
+            const bool ok =
+                arg == "-w"
+                    ? TOOL::takeValue(argc, argv, index, value)
+                    : TOOL::optionValue(arg, "--workspace", argc, argv, index, value);
+            if (!ok)
                 return USAGE;
-            options.breakpoints.emplace_back(argv[++index]);
-        }
-        else if (arg == "-w" || arg == "--workspace")
-        {
-            if (index + 1 >= argc || argv[index + 1] == nullptr || argv[index + 1][0] == '\0')
-                return USAGE;
-            options.workspace = argv[++index]; // the value is taken verbatim
-        }
-        else if (arg.rfind("--workspace=", 0) == 0)
-        {
-            if (arg.size() == 12)
-                return USAGE;
-            options.workspace = arg.substr(12);
+            options.workspace = std::move(value); // the value is taken verbatim
         }
         else
             return USAGE;
@@ -1041,13 +1022,12 @@ int CLI::parse(int argc, char *argv[], Options &options)
 
 void CLI::printVersion(std::ostream &out)
 {
-    out << "motevm " << MOTEVM_VERSION << " (MOTEBC " << MOTEBC_VERSION << ")\n";
+    TOOL::printVersionLine(out, "motevm", "MOTEBC", MOTEBC_VERSION);
 }
 
 void CLI::printUsage(std::ostream &out)
 {
-    out << "motevm " << MOTEVM_VERSION << " (MOTEBC " << MOTEBC_VERSION << ")\n\n";
-    out << "usage:\n";
+    TOOL::printUsageHeader(out, "motevm", "MOTEBC", MOTEBC_VERSION);
     out << "  motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] "
            "[intern_parameters]\n\n";
     out << "extern_parameters:\n";

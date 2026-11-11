@@ -11,6 +11,7 @@
 #include "define.hpp"
 #include "dis/disassembler.hpp"
 #include "common/args.hpp"
+#include "common/cli.hpp"
 #include "common/diagnostics.hpp"
 #include "common/io.hpp"
 #include "common/path.hpp"
@@ -50,7 +51,7 @@ int CLI::parse(int argc, char *argv[], Options &options)
     for (int index = 1; index < argc; ++index)
     {
         const std::string argument = argv[index] == nullptr ? std::string() : argv[index];
-        if (!endOfOptions && argument == "--")
+        if (!endOfOptions && TOOL::isEndOfOptions(argument))
         {
             endOfOptions = true;
             continue;
@@ -85,40 +86,30 @@ int CLI::parse(int argc, char *argv[], Options &options)
             options.checkRoundtrip = true;
             continue;
         }
-        if (!endOfOptions && (argument == "-o" || argument == "--output"))
+        if (!endOfOptions && (argument == "-o" || TOOL::matchesOption(argument, "--output")))
         {
-            if (!TOOL::takeValue(argc, argv, index, options.output))
+            const bool ok =
+                argument == "-o"
+                    ? TOOL::takeValue(argc, argv, index, options.output)
+                    : TOOL::optionValue(argument, "--output", argc, argv, index,
+                                        options.output);
+            if (!ok)
                 return 1;
             options.outputSet = true;
             continue;
         }
-        if (!endOfOptions && argument.rfind("--output=", 0) == 0)
+        if (!endOfOptions && TOOL::matchesOption(argument, "--listing"))
         {
-            options.output = argument.substr(9);
-            if (options.output.empty())
-                return 1;
-            options.outputSet = true;
-            continue;
-        }
-        if (!endOfOptions && argument == "--listing")
-        {
-            if (!TOOL::takeValue(argc, argv, index, options.listingPath))
+            if (!TOOL::optionValue(argument, "--listing", argc, argv, index,
+                                   options.listingPath))
                 return 1;
             options.listing = true;
             continue;
         }
-        if (!endOfOptions && argument.rfind("--listing=", 0) == 0)
-        {
-            options.listingPath = argument.substr(10);
-            if (options.listingPath.empty())
-                return 1;
-            options.listing = true;
-            continue;
-        }
-        if (!endOfOptions && argument == "--max-errors")
+        if (!endOfOptions && TOOL::matchesOption(argument, "--max-errors"))
         {
             std::string value;
-            if (!TOOL::takeValue(argc, argv, index, value))
+            if (!TOOL::optionValue(argument, "--max-errors", argc, argv, index, value))
                 return 1;
             std::int64_t parsed = 0;
             if (!TOOL::parseInt64(value, parsed) || parsed < 0 || parsed > 100000)
@@ -126,15 +117,7 @@ int CLI::parse(int argc, char *argv[], Options &options)
             options.maxErrors = static_cast<int>(parsed);
             continue;
         }
-        if (!endOfOptions && argument.rfind("--max-errors=", 0) == 0)
-        {
-            std::int64_t parsed = 0;
-            if (!TOOL::parseInt64(argument.substr(13), parsed) || parsed < 0 || parsed > 100000)
-                return 1;
-            options.maxErrors = static_cast<int>(parsed);
-            continue;
-        }
-        if (!endOfOptions && !argument.empty() && argument[0] == '-' && argument != "-")
+        if (!endOfOptions && TOOL::isOptionToken(argument))
             return 1;
         if (options.input.empty())
             options.input = argument;
@@ -148,9 +131,10 @@ int CLI::parse(int argc, char *argv[], Options &options)
         return 1;
     if (options.debug && options.noDebug)
         return 1;
-    if (!options.outputSet && options.input == "-")
+    if (!options.outputSet && TOOL::isStdioToken(options.input))
         return 1;
-    if (options.outputSet && options.output != "-" && options.input != "-" &&
+    if (options.outputSet && !TOOL::isStdioToken(options.output) &&
+        !TOOL::isStdioToken(options.input) &&
         TOOL::samePath(options.input, options.output))
         return 1;
     return 0;
@@ -158,13 +142,12 @@ int CLI::parse(int argc, char *argv[], Options &options)
 
 void CLI::printVersion(std::ostream &out)
 {
-    out << "moteasm " << MOTEVM_VERSION << " (MOTEBC " << MOTEBC_VERSION << ")\n";
+    TOOL::printVersionLine(out, "moteasm", "MOTEBC", MOTEBC_VERSION);
 }
 
 void CLI::printUsage(std::ostream &out)
 {
-    out << "moteasm " << MOTEVM_VERSION << " (MOTEBC " << MOTEBC_VERSION << ")\n\n";
-    out << "usage:\n";
+    TOOL::printUsageHeader(out, "moteasm", "MOTEBC", MOTEBC_VERSION);
     out << "  moteasm [options] <input.mta>\n\n";
     out << "options:\n";
     out << "  -o, --output FILE   output .mbc (default: input with .mbc; '-' = stdout)\n";

@@ -9,6 +9,7 @@
 #include "define.hpp"
 #include "dis/disassembler.hpp"
 #include "common/args.hpp"
+#include "common/cli.hpp"
 #include "common/diagnostics.hpp"
 #include "common/io.hpp"
 #include "common/path.hpp"
@@ -20,7 +21,7 @@ int CLI::parse(int argc, char *argv[], Options &options)
     for (int index = 1; index < argc; ++index)
     {
         const std::string argument = argv[index] == nullptr ? std::string() : argv[index];
-        if (!endOfOptions && argument == "--")
+        if (!endOfOptions && TOOL::isEndOfOptions(argument))
         {
             endOfOptions = true;
             continue;
@@ -50,22 +51,19 @@ int CLI::parse(int argc, char *argv[], Options &options)
             options.checkRoundtrip = true;
             continue;
         }
-        if (!endOfOptions && (argument == "-o" || argument == "--output"))
+        if (!endOfOptions && (argument == "-o" || TOOL::matchesOption(argument, "--output")))
         {
-            if (!TOOL::takeValue(argc, argv, index, options.output))
+            const bool ok =
+                argument == "-o"
+                    ? TOOL::takeValue(argc, argv, index, options.output)
+                    : TOOL::optionValue(argument, "--output", argc, argv, index,
+                                        options.output);
+            if (!ok)
                 return 1;
             options.outputSet = true;
             continue;
         }
-        if (!endOfOptions && argument.rfind("--output=", 0) == 0)
-        {
-            options.output = argument.substr(9);
-            if (options.output.empty())
-                return 1;
-            options.outputSet = true;
-            continue;
-        }
-        if (!endOfOptions && !argument.empty() && argument[0] == '-' && argument != "-")
+        if (!endOfOptions && TOOL::isOptionToken(argument))
             return 1;
         if (options.input.empty())
             options.input = argument;
@@ -79,7 +77,8 @@ int CLI::parse(int argc, char *argv[], Options &options)
         return 1;
     if (options.annotate && options.checkRoundtrip)
         return 1;
-    if (options.outputSet && options.output != "-" && options.input != "-" &&
+    if (options.outputSet && !TOOL::isStdioToken(options.output) &&
+        !TOOL::isStdioToken(options.input) &&
         TOOL::samePath(options.input, options.output))
         return 1;
     return 0;
@@ -87,13 +86,12 @@ int CLI::parse(int argc, char *argv[], Options &options)
 
 void CLI::printVersion(std::ostream &out)
 {
-    out << "motedis " << MOTEVM_VERSION << " (MOTEBC " << MOTEBC_VERSION << ")\n";
+    TOOL::printVersionLine(out, "motedis", "MOTEBC", MOTEBC_VERSION);
 }
 
 void CLI::printUsage(std::ostream &out)
 {
-    out << "motedis " << MOTEVM_VERSION << " (MOTEBC " << MOTEBC_VERSION << ")\n\n";
-    out << "usage:\n";
+    TOOL::printUsageHeader(out, "motedis", "MOTEBC", MOTEBC_VERSION);
     out << "  motedis [options] <input.mbc>\n\n";
     out << "options:\n";
     out << "  -o, --output FILE  canonical text output (default: stdout; '-' = stdout)\n";

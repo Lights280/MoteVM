@@ -1,5 +1,5 @@
 #pragma once
-// Shared types for the MoteASM / MoteDIS command line tools.
+// Shared types for the command-line tools.
 // Tool-only code lives in src/include; it never enters the .mbc format.
 
 #include <cstdint>
