@@ -117,7 +117,7 @@ namespace
     constexpr dword MAX_HOST_HEAP_BYTES = 256u << 20;
     constexpr qword HOST_ADDRESS_LIMIT = 0x100000000ull; // 4 GiB linear memory
 
-    // negative results reuse the error codes of docs/05 §8.7
+    // negative results reuse the error codes of docs/05-toolchain.md §8.7
     constexpr int HOST_SYSTEM_ERROR = -3; // open/read/write/remove failure
     constexpr int HOST_DENIED = -4;       // outside the workspace / not granted
     constexpr int HOST_BAD_ARGUMENT = -5; // bad range, size or path bytes
@@ -186,7 +186,7 @@ namespace
         }
     }
 
-    // CLI built-in "print" (docs/05 §8.6). The transitional value model keeps raw
+    // CLI built-in "print" (docs/05-toolchain.md §8.6). The transitional value model keeps raw
     // 32-bit registers (ADR-019), so the argument is printed as a signed 32-bit
     // integer; full TOSTR rendering of Value arrives with M3.
     dword printFunction(void *user, const dword *args, int arity)
@@ -195,7 +195,7 @@ namespace
         if (state == nullptr || state->out == nullptr || args == nullptr || arity != 1)
             return 0;
         *state->out << std::bit_cast<int>(args[0]) << '\n';
-        state->out->flush(); // line buffered (docs/05 §8.5)
+        state->out->flush(); // line buffered (docs/05-toolchain.md §8.5)
         ++state->lines;
         return 0;
     }

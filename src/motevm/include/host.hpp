@@ -72,12 +72,12 @@ public:
     Host &operator=(const Host &) = delete;
 
     // Registers a host function; call it before load() because imports are resolved at
-    // load time (ADR-018). Duplicate names are rejected (docs/04 §7.5).
+    // load time (ADR-018). Duplicate names are rejected (docs/04-embedding-api.md §7.5).
     int registerFunction(const std::string &name, int arity, HOST::Function function,
                          void *user = nullptr);
     int load(const std::string &path);
     // Loads from 'path' but reports 'displayPath' in --status/--debug output, so a
-    // workspace-resolved absolute path never leaks into diagnostics (docs/self §6).
+    // workspace-resolved absolute path never leaks into diagnostics (docs/self/cli.md §6).
     int load(const std::string &path, const std::string &displayPath);
     int load(const std::vector<std::string> &paths);
     int initMemory(void);

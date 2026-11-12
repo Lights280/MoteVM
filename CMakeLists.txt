@@ -183,7 +183,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
-# --- 选项（docs/06 §2.1，名字不得改） ---------------------------------------
+# --- 选项（docs/06-build.md §2.1，名字不得改） ---------------------------------------
 option(MOTEVM_BUILD_TOOLS      "Build module executables from src/" ON)
 option(MOTEVM_BUILD_TESTS      "Build tests (requires tests/)" ON)
 option(MOTEVM_BUILD_BENCHMARKS "Build benchmarks (requires benchmarks/)" OFF)
@@ -192,7 +192,7 @@ option(MOTEVM_SANITIZERS       "Enable ASan/UBSan" OFF)
 option(MOTEVM_WERROR           "Treat warnings as errors" OFF)
 option(MOTEVM_INSTALL          "Generate install rules" OFF)
 
-# --- 警告集合（docs/06 §2.4） -----------------------------------------------
+# --- 警告集合（docs/06-build.md §2.4） -----------------------------------------------
 # 注意：Windows 上 clang++ 的 MSVC 变量同样为 TRUE，因此按 frontend variant 分支，
 # 只有 cl / clang-cl 才使用 /W4 风格选项。
 function(motevm_apply_warnings target)
@@ -213,7 +213,7 @@ function(motevm_apply_warnings target)
     endif()
 endfunction()
 
-# --- 消毒（docs/06 §2.4） ---------------------------------------------------
+# --- 消毒（docs/06-build.md §2.4） ---------------------------------------------------
 function(motevm_apply_sanitizers target)
     if(NOT MOTEVM_SANITIZERS)
         return()

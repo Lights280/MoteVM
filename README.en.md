@@ -1,6 +1,6 @@
 # MoteVM
 
-**English** | [简体中文](README.md)
+**English** | [简体中文](README.md) | [Documentation](docs/en/README.md)
 
 MoteVM is a self-contained virtual machine and toolchain written in C++20. It targets
 **MOTEBC 1.0** bytecode (`.mbc`), and modules can be packaged into **MTR 1.0** archives
@@ -32,8 +32,12 @@ MoteVM ships four command-line tools plus a standalone build driver:
 | `src/motedis/` | Disassembler: `.mbc` -> canonical `.mta` text |
 | `src/motear/` | Archive tool: pack, list, verify and unpack `.mtr` |
 | `src/builder/` | Standalone build driver; can build the whole project outside CMake |
+| `docs/` | User documentation: quick start, ISA, bytecode/archive formats, toolchain, build and limits |
 | `CMakeLists.txt` | Root build script; auto-discovers `src/<module>/<module>.cpp` as executable targets |
 | `LICENSE` | MIT license |
+
+> A clone contains only the files above. `tests/`, `benchmarks/`, `deepseek-cache/`,
+> and similar are local working directories and are not tracked.
 
 ## Requirements
 
@@ -83,13 +87,20 @@ for example `build/cmake/clang-x64-release/bin/motevm`.
 
 ## Command-line tools
 
+A runnable example is included at [`docs/examples/hello.mta`](docs/examples/hello.mta):
+
 ```bash
-moteasm hello.mta -o hello.mbc                # assemble
+moteasm docs/examples/hello.mta -o hello.mbc  # assemble
 motevm hello.mbc                              # run; -s stats, -d debug, -i interactive debugger
+# output: hello, mote
 motedis hello.mbc                             # disassemble to canonical text
 motear pack -o hello.mtr --module hello.mbc   # package
 motear list hello.mtr --verify                # list and verify an archive
 ```
+
+`.mta` syntax is documented in [docs/en/self/moteasm.md](docs/en/self/moteasm.md),
+instruction semantics in [docs/en/01-isa.md](docs/en/01-isa.md), and the full tool
+reference in [docs/en/05-toolchain.md](docs/en/05-toolchain.md).
 
 ### `motevm` common options
 
@@ -108,6 +119,9 @@ Usage: `motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_
 | `--trace-limit N` | stop recording after N trace lines (0 = unlimited) |
 | `-w, --workspace DIR` | grant read/write access inside `DIR` only (default: stdio only) |
 
+Built-in host functions (`print`, `print_str`, `const_addr`, ...) are documented in
+[docs/en/self/cli.md](docs/en/self/cli.md) §10.
+
 ### `motear` subcommands
 
 | Subcommand | Description |
@@ -117,6 +131,9 @@ Usage: `motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_
 | `info` | print header and manifest information (`--json`) |
 | `verify` | validate the container and its modules (`--strict`, `--no-modules`) |
 | `unpack` | extract entries into a directory (`-C DIR`, `--force`, `--module NAME`) |
+
+The archive format and manifest fields are specified in
+[docs/en/07-mtr-format.md](docs/en/07-mtr-format.md).
 
 ## Standalone builder
 
@@ -139,9 +156,21 @@ builder clean    # remove builder outputs (never CMake files)
 | `motedis` | `0` success, `1` usage, `2` input/verify error, `4` internal or I/O error |
 | `motear` | `0` success, `1` usage, `2` input/verify error, `3` I/O error, `4` internal error |
 
+## Stability and version
+
+- Version `0.1.0`; bytecode `MOTEBC 1.0`; archive `MTR 1.0`.
+- The command-line tools and the MOTEBC/MTR formats are documented; options may still
+  change during 0.x, and `--help` is authoritative.
+- The C++ `Host`/`Core` interfaces under `src/motevm/include/` are internal: no umbrella
+  header, not installed as a library, and no ABI stability promise. See
+  [docs/en/04-embedding-api.md](docs/en/04-embedding-api.md).
+- There are currently no git tags or CHANGELOG.
+- All hard limits: [docs/en/08-limits.md](docs/en/08-limits.md).
+
 ## Help
 
-Every tool prints its full option list and exit codes with `--help`:
+The documentation index is [docs/en/README.md](docs/en/README.md). Every tool prints its
+full option list and exit codes with `--help`:
 `motevm --help`, `moteasm --help`, `motedis --help`, `motear --help`, `builder --help`.
 
 ## License
