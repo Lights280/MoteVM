@@ -43,8 +43,9 @@ bytecode (`.mbc`) and MTR 1.0 archives (`.mtr`).
 | Surface | Status | Notes |
 | --- | --- | --- |
 | Command-line tools | Documented | Options may change during 0.x; `--help` is authoritative |
-| MOTEBC 1.0 / MTR 1.0 | Documented | Format versions are independent of the project version; no release tags yet |
+| MOTEBC 1.0 / MTR 1.0 | Documented | Format versions are independent of the project version; release tags are created by the maintainers on frozen commits |
 | C++ `Host`/`Core`/`Parse` | Internal, unstable | No umbrella header, no installed library, no ABI promise |
+| `tests/`, CI | Part of the repository | Unit tests and CLI integration checks; see `CHANGELOG.md` |
 | Target ISA (`Value`/GC), `motec`, JIT | Not implemented | Out of scope for this documentation |
 
 ## Versions

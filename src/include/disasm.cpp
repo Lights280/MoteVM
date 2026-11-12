@@ -172,15 +172,15 @@ std::string DISASM::formatOperands(byte opcode, byte a, byte b, byte c)
     return out.str();
 }
 
-std::string DISASM::format(dword word)
+std::string DISASM::format(dword instruction)
 {
-    const byte opcode = static_cast<byte>(word & ISA::OPCODE_MASK);
-    const byte a = static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
-    const byte b = static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
-    const byte c = static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
+    const byte opcode = static_cast<byte>(instruction & ISA::OPCODE_MASK);
+    const byte a = static_cast<byte>((instruction >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
+    const byte b = static_cast<byte>((instruction >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
+    const byte c = static_cast<byte>((instruction >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
 
     const char *name = mnemonic(opcode);
     if (name == nullptr)
-        return ".word " + hex(word, 8);
+        return ".word " + hex(instruction, 8);
     return std::string(name) + formatOperands(opcode, a, b, c);
 }

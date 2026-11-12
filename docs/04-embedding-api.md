@@ -135,7 +135,7 @@ int main()
 |---|---|---|---|
 | `Host` | 模块 `Parse` 列表、路径、常量地址表、每模块 `HostSlot` 表、`Memory`、最近的 `Core` | — | 不可拷贝；必须比它创建的 `Core` 和借出的区间活得更久 |
 | `Parse` | 模块字节缓冲区（镜像 span 指向其中） | — | 拷贝被删除、可移动；由 `Host` 拥有；必须比使用它的 `Core` 活得更久 |
-| `Core` | 调用栈、copy extent、调用表 | `Memory` 指针、CODE span、FUNCS span、`HostSlot` span | 每次运行一个；视为不可拷贝；借用的对象必须比它活得更久 |
+| `Core` | 调用栈、copy extent、调用表 | `Memory` 指针、CODE span、FUNCS span、`HostSlot` span | 每次运行一个；不可拷贝；借用的对象必须比它活得更久 |
 | `Memory` | 块表和块分配 | — | 不可拷贝、不可移动；`Host` 用 `unique_ptr` 持有；一次 `initMemory()` 一个 |
 | `HostSlot` 表 | — | 函数指针和 `user` 指针 | 由 `Host` 拥有；加载时绑定，`Host` 析构前保持有效 |
 
@@ -145,7 +145,7 @@ int main()
 - `Parse` 拥有模块字节，镜像中的 CODE/FUNCS/常量 span 指向该缓冲区。`Core` 只借用这些 span，因此不能让 `Parse` 在 `Core` 运行期间销毁。
 - `Host` 在内部保存 `std::unique_ptr<Memory>` 和 `std::unique_ptr<Core>`；模块没有卸载 API，已加载模块一直存活到 `Host` 析构。
 - `Memory` 显式删除了拷贝和移动操作。复制块表会产生两个所有者，使 `allocate()`/`free()` 互相使对方的缓存失效。
-- `Core` 的拷贝操作在当前头文件中没有显式删除；但拷贝会复制帧栈而仍指向同一份借用的 `Memory`/CODE/槽位表，因此拷贝 `Core` 不是受支持的用法。不要拷贝它。
+- `Core` 的拷贝构造和拷贝赋值已显式删除；它借用的 `Memory`/CODE/槽位表不能被两个实例共享。
 - 直接嵌入时，`Core::attachImports` 的 `std::span<const CORE::HostSlot>` 必须在整个运行期间有效；不要把临时 `std::vector` 的 span 传进去。
 - `Host::module(index)` 和 `Host::path(index)` 返回内部对象的引用；它们只在 `Host` 存活期间有效。
 
@@ -194,11 +194,9 @@ int main()
 
 | 方法 | 行为 |
 |---|---|
-| `int allocate(int block)` | 块索引 `0..65535`；`RELEASED` 时分配 64 KiB 并置为 `FREE`；`FREE` 时幂等返回 `OK`；`OCCUPIED` 时返回 `BLOCK_OCCUPIED`；越界返回 `MEMORY_UNAVAILABLE` |
+| `int allocate(int block)` | 块索引 `0..65535`；`RELEASED` 时分配 64 KiB 并置为 `FREE`；`FREE` 时幂等返回 `OK`；越界返回 `MEMORY_UNAVAILABLE` |
 | `void free(int block)` | 释放映射并置为 `RELEASED`；非法索引是无操作 |
 | `std::size_t allocatedBlocks() const` | 返回非 `RELEASED` 的块数 |
-
-当前分配器不会把块置为 `OCCUPIED`，因此 `BLOCK_OCCUPIED` 在当前运行时不会出现。
 
 ### 6.2 访问
 
@@ -218,7 +216,7 @@ int main()
 - 4 字节访问和 `reads`/`writes` 可以跨块，但涉及的所有块都必须已分配；`reads`/`writes` 按块分段处理。
 - `reads`/`writes` 的 `size` 大于传入 buffer 的大小时返回 `MEMORY_UNAVAILABLE`。
 - 访问不会自动分配或增长内存。`Host::initMemory()` 只分配常量触及的块；堆分配由宿主代码自行调用 `Memory::allocate()`（CLI 的 `mem_alloc` 就是这样实现的）。
-- 错误码：`OK` (0)、`BLOCK_OCCUPIED` (1)、`MEMORY_UNAVAILABLE` (2)、`MEMORY_OVERFLOW` (3)。
+- 错误码：`OK` (0)、`MEMORY_UNAVAILABLE` (2)、`MEMORY_OVERFLOW` (3)。
 
 ## 7. 宿主函数
 

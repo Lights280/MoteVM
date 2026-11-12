@@ -287,15 +287,14 @@ See §3.7 HOSTCALL.
 ## 6. Memory Model
 
 - The address space is a **flat 4 GiB space** (`0x00000000`..`0xFFFFFFFF`) managed in **64 KiB blocks**: 65536 blocks.
-- Each block has one of three states:
+- Each block has one of two states:
 
 | State | Meaning |
 |---|---|
 | `RELEASED` | Not allocated; any access faults |
 | `FREE` | Allocated and readable/writable |
-| `OCCUPIED` | Occupied and inaccessible to the VM |
 
-- Blocks are allocated on demand by the host through `Memory::allocate`; `LOAD` / `STO` **never** allocate a block automatically. Accessing a `RELEASED` or `OCCUPIED` block produces `MEMORY_FAULT (15)`.
+- Blocks are allocated on demand by the host through `Memory::allocate`; `LOAD` / `STO` **never** allocate a block automatically. Accessing a `RELEASED` block produces `MEMORY_FAULT (15)`; calling `allocate` again for an allocated block is idempotent.
 - The effective address is computed in 64 bits: `address = r[B] + imm8`. When `address > 4 GiB - 4`, the access produces `MEMORY_FAULT` instead of wrapping at 32 bits.
 - Accesses are always 4 bytes wide and little-endian. Unaligned accesses are allowed.
 - A 4-byte access may cross a 64 KiB block boundary: the low and high parts land in adjacent blocks, and both blocks must be `FREE`; if either is unavailable, the access faults.

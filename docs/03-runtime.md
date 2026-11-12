@@ -92,7 +92,7 @@ Host::error() / Core::error()           Read the final status
 | `MEMORY::ADDRESS_SPACE` | 4 GiB | `BLOCK_COUNT * BLOCK_SIZE` |
 
 - `Memory` 构造时不分配任何块。块在 `Memory::allocate(index)` 时按需分配，在 `free(index)` 后回到未映射状态。
-- 块状态为 `RELEASED`（未映射）、`FREE`（已分配）或 `OCCUPIED`。当前分配器只产生 `RELEASED` 和 `FREE` 两种状态；`OCCUPIED` 和 `BLOCK_OCCUPIED` 在当前运行时中不会被产生。
+- 块状态为 `RELEASED`（未映射）或 `FREE`（已分配）。对已分配的块再次调用 `allocate` 是幂等的，返回 `MEMORY::OK`。
 - 4 字节访问以 64 位计算 `base + displacement`，因此 32 位寄存器加偏移不会回绕并别名到低地址。地址大于 `ADDRESS_SPACE - 4` 时返回 `MEMORY_OVERFLOW`。
 - 一次 4 字节访问可以跨块边界，但涉及的两个块都必须已分配；否则访问失败。
 - 未映射地址上的 load/store 不会自动分配块。
@@ -258,9 +258,9 @@ Host::error() / Core::error()           Read the final status
 | 值 | 名称 | 含义 |
 |---|---|---|
 | 0 | `OK` | 成功 |
-| 1 | `BLOCK_OCCUPIED` | 目标块已处于 `OCCUPIED` 状态 |
+| 1 | （保留，未使用） | — |
 | 2 | `MEMORY_UNAVAILABLE` | 块未分配、范围非法或缓冲区太小 |
-| 3 | `MEMORY_OVERFLOW` | 地址运算超出 4 GiB 地址空间 |
+| 3 | `MEMORY_OVERFLOW` | 地址运算超出 4 GiB 地址空间（含跨块/缓冲区越界） |
 
 ### 6.5 状态访问器
 

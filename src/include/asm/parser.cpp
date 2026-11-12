@@ -44,6 +44,13 @@ namespace
         return TOOL::isIdentifier(text) && !isReserved(TOOL::toLowerAscii(text));
     }
 
+    // Import names are identifiers or dotted identifiers ("file.write").
+    // A single reserved word is still rejected, matching ordinary names.
+    bool isImportName(std::string_view text)
+    {
+        return !isReserved(TOOL::toLowerAscii(text)) && TOOL::isQualifiedIdentifier(text);
+    }
+
     std::string trim(std::string_view text)
     {
         std::size_t begin = 0;
@@ -161,7 +168,9 @@ namespace
                             Operand &operand, const char *code);
         bool parseIndex(const Token &token, Operand &operand);
         bool parseNameRef(const Token &token, bool allowAnonymous, NameRef &ref);
+        bool parseImportNameRef(const Token &token, NameRef &ref);
         bool parseOperandName(const Token &token, Operand &operand);
+        bool parseImportOperand(const Token &token, Operand &operand);
         bool parseTarget(const Token &token, Operand &operand);
         bool parseTrap(const Token &token, Operand &operand);
         bool parseConstantLiteral(const Token &token, ConstantValue &value);
@@ -973,7 +982,7 @@ namespace
             return false;
         }
         Import import;
-        if (!parseNameRef(tokens[index], false, import.name))
+        if (!parseImportNameRef(tokens[index], import.name))
             return false;
         ++index;
         std::uint64_t arity = 0;
@@ -1190,6 +1199,34 @@ namespace
         return true;
     }
 
+    bool Parser::parseImportNameRef(const Token &token, NameRef &ref)
+    {
+        ref = NameRef{};
+        ref.position = token.position;
+        if (token.isString)
+        {
+            diagnostics.error("E014", token.position, "an import name must not be a string literal");
+            return false;
+        }
+        if (!token.text.empty() && token.text[0] == '#')
+        {
+            Operand index;
+            if (!parseIndex(token, index))
+                return false;
+            ref.kind = NameRef::Kind::Raw;
+            ref.index = index.value;
+            return true;
+        }
+        if (!isImportName(token.text))
+        {
+            diagnostics.error("E001", token.position, "invalid import name '" + token.text + "'");
+            return false;
+        }
+        ref.kind = NameRef::Kind::Name;
+        ref.name = token.text;
+        return true;
+    }
+
 
     bool Parser::parseOperandName(const Token &token, Operand &operand)
     {
@@ -1198,6 +1235,21 @@ namespace
         if (token.isString || (!isName(token.text) && !isLocalLabelName(token.text)))
         {
             diagnostics.error("E011", token.position, "expected a function, import or label name");
+            return false;
+        }
+        operand.kind = Operand::Kind::Name;
+        operand.text = token.text;
+        operand.position = token.position;
+        return true;
+    }
+
+    bool Parser::parseImportOperand(const Token &token, Operand &operand)
+    {
+        if (!token.isString && !token.text.empty() && token.text[0] == '#')
+            return parseIndex(token, operand);
+        if (token.isString || !isImportName(token.text))
+        {
+            diagnostics.error("E011", token.position, "expected an import name or #index");
             return false;
         }
         operand.kind = Operand::Kind::Name;
@@ -1426,8 +1478,14 @@ namespace
             }
             break;
         case PARSE::InstrFormat::call16:
-            if (!expect(2) || !parseRegister(tokens[index], instr.a) ||
-                !parseOperandName(tokens[index + 1], instr.b))
+            if (!expect(2) || !parseRegister(tokens[index], instr.a))
+                return false;
+            if (opcode == ISA::call)
+            {
+                if (!parseOperandName(tokens[index + 1], instr.b))
+                    return false;
+            }
+            else if (!parseImportOperand(tokens[index + 1], instr.b))
                 return false;
             break;
         }

@@ -7,34 +7,34 @@ bool Memory::overflow(dword offset, dword size)
     return end > MEMORY::ADDRESS_SPACE;
 }
 
-int Memory::getBlockStatus(int index)
+int Memory::getBlockStatus(std::size_t index)
 {
-    if (index < 0 || static_cast<size_t>(index) >= MEMORY::BLOCK_COUNT)
+    if (index >= MEMORY::BLOCK_COUNT)
         return MEMORY::RELEASED;
     return blocks[index].status;
 }
 
 int Memory::allocate(int index)
 {
-    if (index < 0 || static_cast<size_t>(index) >= MEMORY::BLOCK_COUNT)
+    if (index < 0 || static_cast<std::size_t>(index) >= MEMORY::BLOCK_COUNT)
         return MEMORY::MEMORY_UNAVAILABLE;
-    if (blocks[index].status == MEMORY::OCCUPIED)
-        return MEMORY::BLOCK_OCCUPIED;
-    if (blocks[index].status == MEMORY::FREE)
+    const std::size_t slot = static_cast<std::size_t>(index);
+    if (blocks[slot].status == MEMORY::FREE)
         return MEMORY::OK; // idempotent
-    blocks[index].pointer = std::make_shared<std::array<byte, MEMORY::BLOCK_SIZE>>();
-    blocks[index].status = MEMORY::FREE;
-    bases[index] = blocks[index].pointer->data();
+    blocks[slot].pointer = std::make_shared<std::array<byte, MEMORY::BLOCK_SIZE>>();
+    blocks[slot].status = MEMORY::FREE;
+    bases[slot] = blocks[slot].pointer->data();
     return MEMORY::OK;
 }
 
 void Memory::free(int index)
 {
-    if (index < 0 || static_cast<size_t>(index) >= MEMORY::BLOCK_COUNT)
+    if (index < 0 || static_cast<std::size_t>(index) >= MEMORY::BLOCK_COUNT)
         return;
-    bases[index] = nullptr;
-    blocks[index].pointer.reset();
-    blocks[index].status = MEMORY::RELEASED;
+    const std::size_t slot = static_cast<std::size_t>(index);
+    bases[slot] = nullptr;
+    blocks[slot].pointer.reset();
+    blocks[slot].status = MEMORY::RELEASED;
 }
 
 std::size_t Memory::allocatedBlocks(void) const
@@ -47,26 +47,25 @@ std::size_t Memory::allocatedBlocks(void) const
 }
 
 // (internal implementation)to attention, read and write across blocks are not allowed.
-int Memory::writeData(std::span<const byte> buffer, int offset, int index)
+int Memory::writeData(std::span<const byte> buffer, std::size_t offset, std::size_t index)
 {
-    int status = getBlockStatus(index);
-    if (status == MEMORY::RELEASED)
+    if (getBlockStatus(index) == MEMORY::RELEASED)
         return MEMORY::MEMORY_UNAVAILABLE;
-    else if (status == MEMORY::OCCUPIED)
-        return MEMORY::BLOCK_OCCUPIED;
-    std::copy(buffer.begin(), buffer.end(), blocks[index].pointer->begin() + offset);
+    if (offset + buffer.size() > MEMORY::BLOCK_SIZE)
+        return MEMORY::MEMORY_OVERFLOW;
+    std::copy(buffer.begin(), buffer.end(),
+              blocks[index].pointer->begin() + static_cast<std::ptrdiff_t>(offset));
     return MEMORY::OK;
 }
 
-int Memory::readData(std::span<byte> buffer, int offset, int index)
+int Memory::readData(std::span<byte> buffer, std::size_t offset, std::size_t index)
 {
-    int status = getBlockStatus(index);
-    if (status == MEMORY::RELEASED)
+    if (getBlockStatus(index) == MEMORY::RELEASED)
         return MEMORY::MEMORY_UNAVAILABLE;
-    else if (status == MEMORY::OCCUPIED)
-        return MEMORY::BLOCK_OCCUPIED;
-    std::copy(blocks[index].pointer->begin() + offset,
-              blocks[index].pointer->begin() + offset + buffer.size(),
+    if (offset + buffer.size() > MEMORY::BLOCK_SIZE)
+        return MEMORY::MEMORY_OVERFLOW;
+    std::copy(blocks[index].pointer->begin() + static_cast<std::ptrdiff_t>(offset),
+              blocks[index].pointer->begin() + static_cast<std::ptrdiff_t>(offset + buffer.size()),
               buffer.begin());
     return MEMORY::OK;
 }
@@ -88,11 +87,11 @@ int Memory::readSlow(dword &value, qword address)
         return MEMORY::MEMORY_OVERFLOW;
 
     const dword offset = static_cast<dword>(address);
-    const int blockIndex = hiword(static_cast<int>(offset));
-    const int blockOffset = loword(static_cast<int>(offset));
+    const std::size_t blockIndex = static_cast<std::size_t>(offset >> 16);
+    const std::size_t blockOffset = static_cast<std::size_t>(offset & 0xFFFFu);
     byte *data = reinterpret_cast<byte *>(&value);
 
-    if (static_cast<dword>(blockOffset) + valueSize <= MEMORY::BLOCK_SIZE)
+    if (blockOffset + valueSize <= MEMORY::BLOCK_SIZE)
         return readData(std::span<byte>(data, valueSize), blockOffset, blockIndex);
 
     // Handle the case where the value spans across two blocks
@@ -111,11 +110,11 @@ int Memory::writeSlow(dword value, qword address)
         return MEMORY::MEMORY_OVERFLOW;
 
     const dword offset = static_cast<dword>(address);
-    const int blockIndex = hiword(static_cast<int>(offset));
-    const int blockOffset = loword(static_cast<int>(offset));
+    const std::size_t blockIndex = static_cast<std::size_t>(offset >> 16);
+    const std::size_t blockOffset = static_cast<std::size_t>(offset & 0xFFFFu);
     const byte *data = reinterpret_cast<const byte *>(&value);
 
-    if (static_cast<dword>(blockOffset) + valueSize <= MEMORY::BLOCK_SIZE)
+    if (blockOffset + valueSize <= MEMORY::BLOCK_SIZE)
         return writeData(std::span<const byte>(data, valueSize), blockOffset, blockIndex);
 
     // Handle the case where the value spans across two blocks
@@ -138,8 +137,8 @@ int Memory::writes(std::span<const byte> buffer, dword offset, dword size)
     while (written < size)
     {
         const dword position = offset + written;
-        const int blockIndex = hiword(position);
-        const int blockOffset = loword(position);
+        const std::size_t blockIndex = static_cast<std::size_t>(position >> 16);
+        const std::size_t blockOffset = static_cast<std::size_t>(position & 0xFFFFu);
         const dword blockRemain = static_cast<dword>(MEMORY::BLOCK_SIZE) - static_cast<dword>(blockOffset);
         const dword chunk = std::min(blockRemain, size - written);
 
@@ -162,8 +161,8 @@ int Memory::reads(std::span<byte> buffer, dword offset, dword size)
     while (read < size)
     {
         const dword position = offset + read;
-        const int blockIndex = hiword(position);
-        const int blockOffset = loword(position);
+        const std::size_t blockIndex = static_cast<std::size_t>(position >> 16);
+        const std::size_t blockOffset = static_cast<std::size_t>(position & 0xFFFFu);
         const dword blockRemain = static_cast<dword>(MEMORY::BLOCK_SIZE) - static_cast<dword>(blockOffset);
         const dword chunk = std::min(blockRemain, size - read);
 

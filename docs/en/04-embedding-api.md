@@ -135,7 +135,7 @@ Usage order:
 |---|---|---|---|
 | `Host` | module `Parse` list, paths, constant address table, per-module `HostSlot` tables, `Memory`, most recent `Core` | — | Non-copyable; must outlive the `Core`s it creates and the ranges it lends out |
 | `Parse` | module byte buffer (image spans point into it) | — | Copy deleted, movable; owned by `Host`; must outlive any `Core` using it |
-| `Core` | call stack, copy extents, call table | `Memory` pointer, CODE span, FUNCS span, `HostSlot` span | One per run; treat as non-copyable; borrowed objects must outlive it |
+| `Core` | call stack, copy extents, call table | `Memory` pointer, CODE span, FUNCS span, `HostSlot` span | One per run; non-copyable; borrowed objects must outlive it |
 | `Memory` | block table and block allocations | — | Non-copyable, non-movable; `Host` holds it with `unique_ptr`; one per `initMemory()` |
 | `HostSlot` table | — | function and `user` pointers | Owned by `Host`; bound at load and valid until `Host` is destroyed |
 
@@ -145,7 +145,7 @@ Usage order:
 - `Parse` owns the module bytes; CODE/FUNCS/constant spans in the image point into that buffer. `Core` only borrows those spans, so `Parse` must not be destroyed while a `Core` is running.
 - `Host` stores `std::unique_ptr<Memory>` and `std::unique_ptr<Core>` internally. There is no module unload API; loaded modules live until `Host` is destroyed.
 - `Memory` explicitly deletes copy and move operations. Copying the block table would create two owners whose `allocate()`/`free()` invalidate each other's caches.
-- The copy operations of `Core` are not explicitly deleted in the current header; however, a copy duplicates the frame stack while still pointing at the same borrowed `Memory`/CODE/slot table, so copying a `Core` is not a supported usage. Do not copy it.
+- `Core` copy construction and copy assignment are explicitly deleted; its borrowed `Memory`/CODE/slot table cannot be shared by two instances.
 - When embedding directly, the `std::span<const CORE::HostSlot>` passed to `Core::attachImports` must remain valid for the whole run; do not pass the span of a temporary `std::vector`.
 - `Host::module(index)` and `Host::path(index)` return references to internal objects; they are valid only while `Host` is alive.
 
@@ -194,11 +194,9 @@ The following mapping belongs to the `motevm` CLI, not to the `Host` API itself:
 
 | Method | Behavior |
 |---|---|
-| `int allocate(int block)` | Block index `0..65535`; on `RELEASED`, allocate 64 KiB and set `FREE`; on `FREE`, return `OK` idempotently; on `OCCUPIED`, return `BLOCK_OCCUPIED`; out of range returns `MEMORY_UNAVAILABLE` |
+| `int allocate(int block)` | Block index `0..65535`; on `RELEASED`, allocate 64 KiB and set `FREE`; on `FREE`, return `OK` idempotently; out of range returns `MEMORY_UNAVAILABLE` |
 | `void free(int block)` | Release the mapping and set `RELEASED`; an invalid index is a no-op |
 | `std::size_t allocatedBlocks() const` | Number of blocks that are not `RELEASED` |
-
-The current allocator never sets a block to `OCCUPIED`, so `BLOCK_OCCUPIED` does not occur in the current runtime.
 
 ### 6.2 Access
 
@@ -218,7 +216,7 @@ The current allocator never sets a block to `OCCUPIED`, so `BLOCK_OCCUPIED` does
 - 4-byte accesses and `reads`/`writes` may cross blocks, but every block involved must be allocated; `reads`/`writes` process the range block by block.
 - If `size` passed to `reads`/`writes` is larger than the supplied buffer, the call returns `MEMORY_UNAVAILABLE`.
 - Access never allocates or grows memory automatically. `Host::initMemory()` allocates only the blocks touched by constants; heap allocation is performed by host code calling `Memory::allocate()` itself (the CLI's `mem_alloc` does exactly that).
-- Error codes: `OK` (0), `BLOCK_OCCUPIED` (1), `MEMORY_UNAVAILABLE` (2), `MEMORY_OVERFLOW` (3).
+- Error codes: `OK` (0), `MEMORY_UNAVAILABLE` (2), `MEMORY_OVERFLOW` (3).
 
 ## 7. Host functions
 

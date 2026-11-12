@@ -202,8 +202,7 @@ int Host::runModule(std::size_t index, CORE::DebugHook hook, void *user)
     Core &core = *lastCore;
     // Parse::parse() runs the verifier, so the loaded image is safe for the
     // unguarded fast loop's no-bounds path.
-    int result =
-        core.attachVerifiedModule(parsed.text(), parsed.functions(), parsed.copyExtents());
+    int result = core.attachVerifiedModule(parsed);
     if (result != CORE::OK)
     {
         hostStats.result = result;

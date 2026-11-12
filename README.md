@@ -31,12 +31,13 @@ MoteVM 由四个命令行工具和一个独立构建驱动组成：
 | `src/motedis/` | 反汇编器：`.mbc` -> 规范化 `.mta` 文本 |
 | `src/motear/` | 归档工具：打包、查看、校验、解包 `.mtr` |
 | `src/builder/` | 独立构建驱动，可在 CMake 之外单独构建整个项目 |
+| `tests/` | 自包含测试套件（CTest）：解析、验证器、往返、归档、运行时、CLI |
 | `docs/` | 用户文档：快速开始、ISA、字节码/归档格式、工具链、构建与限制 |
 | `CMakeLists.txt` | 根构建脚本，自动发现 `src/<module>/<module>.cpp` 为可执行目标 |
 | `LICENSE` | MIT 许可证 |
 
-> 克隆仓库只包含上表文件。`tests/`、`benchmarks/`、`deepseek-cache/`
-> 等是本地工作目录，不在版本库中。
+> `benchmarks/`、`plan/`、`deepseek-cache/` 等是本地工作目录，不在版本库中；
+> `tests/` 与 CI 配置随版本库发布。变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 环境要求
 
@@ -72,7 +73,7 @@ cmake --build build --config Release
 | `MOTEVM_COMPILER` | `auto`（默认）、`clang`、`gcc`、`msvc` |
 | `MOTEVM_ARCH` | `native`（默认）、`x86`、`x64` |
 | `MOTEVM_BUILD_TOOLS` | `ON`（默认），构建 `src/` 下的所有模块 |
-| `MOTEVM_BUILD_TESTS` | `ON`（默认），构建 `tests/`（该目录不存在时自动跳过） |
+| `MOTEVM_BUILD_TESTS` | `ON`（默认），构建并注册 `tests/` 的 CTest 用例 |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF`（默认），构建 `benchmarks/` |
 | `MOTEVM_BUILD_FUZZERS` | `OFF`（默认），构建 libFuzzer 目标（仅 Clang） |
 | `MOTEVM_WERROR` | `OFF`（默认），把警告视为错误 |
@@ -83,6 +84,16 @@ cmake --build build --config Release
 
 可执行文件输出到 `build/cmake/<toolchain>-<arch>-<config>/bin/`，
 例如 `build/cmake/clang-x64-release/bin/motevm`。
+
+### 测试
+
+```bash
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+`tests/` 包含单元测试与 CLI 集成检查（退出码、`--check-roundtrip`、归档往返、
+`--warn-as-error` 等）。`MOTEVM_WERROR=ON` 与 `MOTEVM_SANITIZERS=ON` 可与测试一起使用。
 
 ## 命令行工具
 
@@ -160,7 +171,7 @@ builder clean    # 清理 builder 产物（不会删除 CMake 文件）
 - `src/motevm/include/` 下的 C++ `Host`/`Core` 接口是内部接口：没有 umbrella
   header、不作为库安装、不承诺 ABI 稳定，详见
   [docs/04-embedding-api.md](docs/04-embedding-api.md)。
-- 当前没有 git tag 或 CHANGELOG。
+- 变更记录见 [CHANGELOG.md](CHANGELOG.md)；发布 tag 由维护者在冻结提交上创建。
 - 所有硬限制见 [docs/08-limits.md](docs/08-limits.md)。
 
 ## 帮助

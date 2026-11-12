@@ -303,6 +303,8 @@ error: trap 3 (TRAP) at pc=8
 | `file.size` | 2 | `(pathAddr, pathLen)` → `n` / 负码 | 非普通文件或 > 4 GiB-1 ⇒ `-3` |
 | `file.remove` | 2 | `(pathAddr, pathLen)` → `0` / 负码 | 仅删除普通文件；目录 ⇒ `-3` |
 
+- import 名含点号，可直接书写（汇编器接受点分标识符）：
+  `.import file.write 4` / `.import file.read 4`，`HOSTCALL rDest, file.write`。
 - 未给出 `-w` 时这些 import 在**加载期**失败（exit 2），不会执行任何指令。
 - 给出 `-w` 时所有路径经 `Workspace::resolveRead`/`resolveWrite`：读写都只能落在工作区内。
 - 写操作要求目标父目录已存在且仍在工作区内（映射为 `-3`）。

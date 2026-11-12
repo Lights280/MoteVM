@@ -366,7 +366,7 @@ motedis [options] <input.mbc>
 | `--check-roundtrip` | 内存中重新汇编并比较字节（RT-1） |
 | `--version`, `--help` | 版本/帮助；写 stdout，exit 0 |
 
-- `--annotate` 与 `--check-roundtrip` 互斥 ⇒ exit 1。
+- `--annotate` 或 `--no-debug` 与 `--check-roundtrip` 互斥 ⇒ exit 1。
 - 输入为 `-` 时从 stdin 读取。
 - 输入与输出为同一路径（均非 stdio token）⇒ exit 1。
 - 非法模块 ⇒ exit 2，不写输出。

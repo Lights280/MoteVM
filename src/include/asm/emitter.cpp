@@ -284,9 +284,9 @@ bool ASM::emitImage(Module &module, const Options &options, std::vector<byte> &i
         }
         offset += section.data.size();
     }
-    if (offset > 0xFFFFFFFFull)
+    if (offset > PARSE::MAX_MODULE_BYTES)
     {
-        diagnostics.error("E031", TOOL::SourcePosition{}, "module exceeds 4 GiB");
+        diagnostics.error("E035", TOOL::SourcePosition{}, "module image exceeds 64 MiB");
         return false;
     }
 

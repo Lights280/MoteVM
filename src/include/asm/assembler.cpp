@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "asm/emitter.hpp"
 #include "asm/parser.hpp"
@@ -149,6 +150,14 @@ namespace
         if (module.constants.size() > PARSE::MAX_STATIC_COUNT)
         {
             diagnostics.error("E015", TOOL::SourcePosition{1, 1}, "constant pool exceeds 65536 entries");
+            return false;
+        }
+        if (module.functions.size() > PARSE::MAX_STATIC_COUNT ||
+            module.globals.size() > PARSE::MAX_STATIC_COUNT ||
+            module.imports.size() > PARSE::MAX_STATIC_COUNT)
+        {
+            diagnostics.error("E015", TOOL::SourcePosition{1, 1},
+                              "function, global or import table exceeds 65536 entries");
             return false;
         }
 
@@ -294,15 +303,80 @@ namespace
         for (std::size_t i = 0; i < module.functions.size(); ++i)
         {
             ASM::Function &function = module.functions[i];
-            bool terminated = false;
-            for (const ASM::Instruction &instruction : function.code)
+            if (function.locals.size() > PARSE::MAX_STATIC_COUNT)
+                diagnostics.error("E015", function.position,
+                                  "local table exceeds 65536 entries");
+
+            // W001: follow real control flow (including branch targets) so an
+            // early TERMINATOR does not mark the rest of the function dead.
+            const auto targetPc = [&function](const ASM::Operand &operand, std::size_t pc,
+                                              std::int64_t &target) {
+                if (operand.kind == ASM::Operand::Kind::Name)
+                {
+                    const ASM::Label *label = findLabel(function, operand.text);
+                    if (label == nullptr)
+                        return false;
+                    target = static_cast<std::int64_t>(label->pc);
+                    return true;
+                }
+                if (operand.kind == ASM::Operand::Kind::Relative)
+                {
+                    target = static_cast<std::int64_t>(pc) + 1 +
+                             operand.offset / ISA::INSTRUCTION_SIZE;
+                    return true;
+                }
+                return false;
+            };
+            std::vector<bool> reachable(function.code.size(), false);
+            std::vector<dword> pending;
+            if (!function.code.empty())
             {
-                if (terminated)
-                    diagnostics.warning("W001", instruction.position,
-                                        "unreachable instruction after a terminator");
-                if (isTerminator(instruction.opcode))
-                    terminated = true;
+                reachable[0] = true;
+                pending.push_back(0);
             }
+            const auto pushPc = [&function, &reachable, &pending](std::int64_t pc) {
+                if (pc >= 0 && pc < static_cast<std::int64_t>(function.code.size()))
+                {
+                    const std::size_t target = static_cast<std::size_t>(pc);
+                    if (!reachable[target])
+                    {
+                        reachable[target] = true;
+                        pending.push_back(static_cast<dword>(target));
+                    }
+                }
+            };
+            while (!pending.empty())
+            {
+                const dword pc = pending.back();
+                pending.pop_back();
+                const ASM::Instruction &instruction = function.code[pc];
+                std::int64_t target = 0;
+                switch (instruction.opcode)
+                {
+                case ISA::jmp:
+                    if (targetPc(instruction.a, pc, target))
+                        pushPc(target);
+                    break;
+                case ISA::jz:
+                case ISA::jnz:
+                    if (targetPc(instruction.b, pc, target))
+                        pushPc(target);
+                    pushPc(static_cast<std::int64_t>(pc) + 1);
+                    break;
+                case ISA::ret:
+                case ISA::halt:
+                case ISA::trap:
+                    break; // no fall-through
+                default:
+                    pushPc(static_cast<std::int64_t>(pc) + 1);
+                    break;
+                }
+            }
+            for (std::size_t pc = 0; pc < function.code.size(); ++pc)
+                if (!reachable[pc])
+                    diagnostics.warning("W001", function.code[pc].position,
+                                        "unreachable instruction");
+
             dword maximum = 0;
             for (const ASM::Instruction &instruction : function.code)
             {
@@ -680,7 +754,9 @@ ASM::AssembleResult ASM::assemble(std::span<const byte> source, const Options &o
     std::vector<byte> image;
     if (!emitImage(module, options, image, listing, diagnostics))
     {
-        AssembleResult.status = TOOL::INTERNAL;
+        // E035 (image too large) is user input; E031-style alignment failures
+        // are internal invariants but are unreachable from valid models.
+        AssembleResult.status = diagnostics.errorCount() != 0 ? TOOL::INPUT : TOOL::INTERNAL;
         return AssembleResult;
     }
 

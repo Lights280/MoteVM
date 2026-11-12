@@ -387,7 +387,7 @@ motedis [options] <input.mbc>
 | `--check-roundtrip` | Re-assemble in memory and compare bytes (RT-1) |
 | `--version`, `--help` | Version/help; stdout, exit 0 |
 
-- `--annotate` and `--check-roundtrip` are mutually exclusive and exit 1.
+- `--annotate` or `--no-debug` together with `--check-roundtrip` are mutually exclusive and exit 1.
 - An input of `-` reads stdin.
 - Input and output naming the same path (both non-stdio tokens) exits 1.
 - An invalid module exits 2 and writes no output.

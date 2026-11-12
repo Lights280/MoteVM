@@ -287,15 +287,14 @@ HOSTCALL rDest, importIndex      ; 0x60, call16
 ## 6. 内存模型
 
 - 地址空间是 **4 GiB 平坦空间**（`0x00000000`..`0xFFFFFFFF`），按 **64 KiB 块**管理：共 65536 块。
-- 每个块有三种状态：
+- 每个块有两种状态：
 
 | 状态 | 含义 |
 |---|---|
 | `RELEASED` | 未分配；访问即故障 |
 | `FREE` | 已分配，可读写 |
-| `OCCUPIED` | 已占用，不可由 VM 访问 |
 
-- 块由宿主按需调用 `Memory::allocate` 分配；`LOAD` / `STO` **不会**自动分配块。访问 `RELEASED` 或 `OCCUPIED` 块都产生 `MEMORY_FAULT (15)`。
+- 块由宿主按需调用 `Memory::allocate` 分配；`LOAD` / `STO` **不会**自动分配块。访问 `RELEASED` 块产生 `MEMORY_FAULT (15)`；对已分配的块再次调用 `allocate` 是幂等的。
 - 有效地址按 64 位计算：`address = r[B] + imm8`。`address > 4 GiB - 4` 时产生 `MEMORY_FAULT`，不会 32 位回绕。
 - 访问宽度固定为 4 字节，小端。允许非对齐访问。
 - 允许跨 64 KiB 块边界的 4 字节访问：高/低两部分分别落在相邻块，两个块都必须是 `FREE`；任意一块不可用即故障。

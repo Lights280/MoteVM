@@ -18,6 +18,10 @@ namespace TOOL
     // [A-Za-z_][A-Za-z0-9_]* (plan/05 §5.3).
     bool isIdentifier(std::string_view text);
 
+    // Dot-separated identifiers, e.g. "file.write" or "os.path.join".
+    // Each segment must satisfy isIdentifier(); no empty segments.
+    bool isQualifiedIdentifier(std::string_view text);
+
     std::string toLowerAscii(std::string_view text);
 
     // Canonical string escaping (plan/05 §2.3): \n \r \t \" \\ plus \xHH for

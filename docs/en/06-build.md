@@ -238,15 +238,22 @@ Without 32-bit multilib, configuration fails with a message to use a MinGW32 too
 
 ## 4. Test, benchmark and fuzz status
 
-The repository currently contains no `tests/`, `benchmarks/` or `fuzz/` directories.
+`tests/` is part of the repository and contains unit tests plus CLI integration
+checks. `benchmarks/` and `fuzz/` remain local working directories.
 
-| Option | Default | Behavior when the directory is missing |
+```bash
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+| Option | Default | Behavior |
 | --- | --- | --- |
-| `MOTEVM_BUILD_TESTS=ON` | yes | Prints `MOTEVM_BUILD_TESTS=ON but tests/ is not present; skipping`; no test targets are produced |
-| `MOTEVM_BUILD_BENCHMARKS=ON` | no | Prints `MOTEVM_BUILD_BENCHMARKS=ON but benchmarks/ is not present; skipping` |
-| `MOTEVM_BUILD_FUZZERS=ON` | no | With Clang, prints `MOTEVM_BUILD_FUZZERS=ON but fuzz/ is not present; skipping`; with other compilers, prints a warning first |
+| `MOTEVM_BUILD_TESTS=ON` | yes | Builds `tests/`, calls `enable_testing()` and registers the `unit` and `cli` CTest cases |
+| `MOTEVM_BUILD_BENCHMARKS=ON` | no | Adds `benchmarks/CMakeLists.txt` when present; otherwise prints a status message and skips |
+| `MOTEVM_BUILD_FUZZERS=ON` | no | Adds `fuzz/` with Clang; other compilers print a warning first |
 
-The default configuration does not fail because these directories are missing.
+CI covers Linux (Clang/GCC, x64/x86), Windows/MSVC (x64/x86), ASan/UBSan,
+`MOTEVM_WERROR=ON`, and the standalone `builder`.
 
 ## 5. Version and compatibility
 
@@ -265,7 +272,8 @@ motedis 0.1.0 (MOTEBC 1.0)
 motear 0.1.0 (MTR 1.0)
 ```
 
-The repository currently has no git tags and no `CHANGELOG`. Version numbers come from the source constants.
+Changes are recorded in `CHANGELOG.md`; release tags are created by the
+maintainers on frozen commits. Version numbers come from the source constants.
 
 Compatibility is defined by the current implementation:
 
@@ -298,10 +306,18 @@ Compatibility is defined by the current implementation:
    build/cmake/clang-x64-release/bin/motevm hello.mbc
    ```
 
-3. Disassemble/reassemble round trip: run `motedis hello.mbc -o hello.out.mta`, reassemble it and run it; the output must match the original module.
+3. Run the tests: `ctest --test-dir build --output-on-failure`; repeat once with
+   `-DMOTEVM_WERROR=ON` and once with `-DMOTEVM_SANITIZERS=ON`.
 
-4. Archive round trip: `motear pack -o hello.mtr --module hello.mbc`, `motear verify hello.mtr`, `motear unpack hello.mtr -C out`.
+4. Disassemble/reassemble round trip: run `motedis --check-roundtrip hello.mbc -o hello.out.mta`, reassemble it and run it; the output must match the original module.
 
-5. Check version consistency: `--version` for `motevm`, `moteasm`, `motedis`, `motear` and `builder` all report `0.1.0`, with format version MOTEBC 1.0 or MTR 1.0 as appropriate.
+5. Archive round trip: `motear pack -o hello.mtr --module hello.mbc`, `motear verify hello.mtr`, `motear unpack hello.mtr -C out`.
 
-6. Optional: use `builder doctor` to confirm the toolchain, architecture and output directories, and `builder targets` to confirm the target list.
+6. Check version consistency: `--version` for `motevm`, `moteasm`, `motedis`, `motear` and `builder` all report `0.1.0`, with format version MOTEBC 1.0 or MTR 1.0 as appropriate.
+
+7. Use `builder doctor` / `builder targets`, then run
+   `builder --build-dir <tmp> --werror` to confirm the standalone driver builds
+   every target.
+
+8. Update the release status in README, this document and `docs/README.md` in
+   the tagging commit, and record the changes in `CHANGELOG.md`.

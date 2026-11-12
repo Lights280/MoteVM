@@ -23,11 +23,9 @@ namespace MEMORY
     const qword ADDRESS_SPACE = static_cast<qword>(BLOCK_COUNT) * BLOCK_SIZE;
     // memory block status
     const int RELEASED = 0;
-    const int OCCUPIED = 1;
     const int FREE = 2;
 
     const int OK = 0;
-    const int BLOCK_OCCUPIED = 1;
     const int MEMORY_UNAVAILABLE = 2;
     const int MEMORY_OVERFLOW = 3;
 }
@@ -54,13 +52,11 @@ private:
     std::array<byte *, MEMORY::BLOCK_COUNT> bases{};
 
 private:
-    int loword(int value) { return value & 0xFFFF; }
-    int hiword(int value) { return (value >> 16) & 0xFFFF; }
-    int getBlockStatus(int index);
+    int getBlockStatus(std::size_t index);
     bool overflow(dword offset, dword size);
     // write and read data to/from a single block, unsafe(check in host functions)
-    int writeData(std::span<const byte> buffer, int offset, int index);
-    int readData(std::span<byte> buffer, int offset, int index);
+    int writeData(std::span<const byte> buffer, std::size_t offset, std::size_t index);
+    int readData(std::span<byte> buffer, std::size_t offset, std::size_t index);
     int readSlow(dword &value, qword address);
     int writeSlow(dword value, qword address);
 

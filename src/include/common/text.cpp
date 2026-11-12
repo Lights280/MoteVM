@@ -194,6 +194,27 @@ bool TOOL::isIdentifier(std::string_view text)
     return true;
 }
 
+bool TOOL::isQualifiedIdentifier(std::string_view text)
+{
+    if (text.empty())
+        return false;
+    std::size_t start = 0;
+    for (;;)
+    {
+        const std::size_t dot = text.find('.', start);
+        const std::string_view segment =
+            text.substr(start, dot == std::string_view::npos ? std::string_view::npos
+                                                             : dot - start);
+        if (!isIdentifier(segment))
+            return false;
+        if (dot == std::string_view::npos)
+            return true;
+        start = dot + 1;
+        if (start >= text.size())
+            return false; // trailing dot
+    }
+}
+
 std::string TOOL::toLowerAscii(std::string_view text)
 {
     std::string lowered;
@@ -325,10 +346,35 @@ bool TOOL::parseFloatBits(std::string_view text, std::uint64_t &bits)
         return true;
     }
 
+    // Match the special words before stripping the optional float suffix:
+    // "inf" and "-inf" themselves end in 'f'.
+    const std::string original = toLowerAscii(text);
+    if (original == "nan" || original == "+nan")
+    {
+        bits = 0x7FF8000000000000ull;
+        return true;
+    }
+    if (original == "-nan")
+    {
+        bits = 0xFFF8000000000000ull;
+        return true;
+    }
+    if (original == "inf" || original == "+inf")
+    {
+        bits = 0x7FF0000000000000ull;
+        return true;
+    }
+    if (original == "-inf")
+    {
+        bits = 0xFFF0000000000000ull;
+        return true;
+    }
+
     std::string literal(text);
     if (!literal.empty() && (literal.back() == 'f' || literal.back() == 'F'))
         literal.pop_back();
 
+    // Also accept the suffix forms "nanf" / "inff" after stripping.
     const std::string lowered = toLowerAscii(literal);
     if (lowered == "nan" || lowered == "+nan")
     {

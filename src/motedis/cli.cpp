@@ -14,6 +14,7 @@
 #include "common/io.hpp"
 #include "common/path.hpp"
 #include "common/text.hpp"
+#include "parse.hpp"
 
 int CLI::parse(int argc, char *argv[], Options &options)
 {
@@ -75,7 +76,9 @@ int CLI::parse(int argc, char *argv[], Options &options)
         return 0;
     if (options.input.empty())
         return 1;
-    if (options.annotate && options.checkRoundtrip)
+    // RT-1 compares the whole module; --annotate and --no-debug both change
+    // the text that is re-assembled, so neither can be combined with it.
+    if ((options.annotate || options.noDebug) && options.checkRoundtrip)
         return 1;
     if (options.outputSet && !TOOL::isStdioToken(options.output) &&
         !TOOL::isStdioToken(options.input) &&
@@ -111,8 +114,10 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
     const std::string display = options.input == "-" ? "<stdin>" : options.input;
     std::vector<byte> module;
     std::string error;
-    const bool read = options.input == "-" ? TOOL::readStdin(module, error)
-                                           : TOOL::readFile(options.input, module, error);
+    const bool read =
+        options.input == "-"
+            ? TOOL::readStdin(module, error, PARSE::MAX_MODULE_BYTES)
+            : TOOL::readFile(options.input, module, error, PARSE::MAX_MODULE_BYTES);
     if (!read)
     {
         err << "motedis: " << display << ": error: " << error << "\n";

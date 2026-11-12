@@ -271,8 +271,9 @@ int PARSE::Verifier::verifyFunction(dword index)
     const PARSE::Function &fn = image->functions[index];
     for (dword pc = fn.entry; pc < fn.entry + fn.instr; ++pc)
     {
-        const dword word = at32(image->code, static_cast<qword>(pc) * ISA::INSTRUCTION_SIZE);
-        const int result = verifyWord(pc, fn, word);
+        const dword instruction =
+            at32(image->code, static_cast<qword>(pc) * ISA::INSTRUCTION_SIZE);
+        const int result = verifyWord(pc, fn, instruction);
         if (result != PARSE::OK)
             return result;
     }

@@ -26,7 +26,7 @@
 | Block count | 65536 | `MEMORY::BLOCK_COUNT` | Accesses with a block index outside 0..65535 fail |
 | Address space | 4 GiB | `MEMORY::ADDRESS_SPACE` = `BLOCK_COUNT * BLOCK_SIZE` | An address past `ADDRESS_SPACE - 4` returns `MEMORY_OVERFLOW`; the core reports `CORE::MEMORY_FAULT`; `motevm` exits with code 3 |
 | Unallocated block | — | `MEMORY::MEMORY_UNAVAILABLE` | Accessing an unallocated block returns this error; the core reports `CORE::MEMORY_FAULT`; exit code 3 |
-| Double allocation | — | `MEMORY::BLOCK_OCCUPIED` | Allocating an already occupied block fails; a failure during initialization makes `motevm` exit with code 4 |
+| Double allocation | — | — | Calling `Memory::allocate` again for an allocated block is idempotent and returns `MEMORY::OK` |
 
 ## 4. Module (MOTEBC 1.0)
 

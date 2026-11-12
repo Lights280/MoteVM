@@ -20,6 +20,7 @@ namespace BUILD
     inline constexpr const char *TARGET_ALL = "all";
     inline constexpr const char *TARGET_BUILDER = "builder";
     inline constexpr const char *TARGET_CORE = "motevm_core";
+    inline constexpr const char *TARGET_ARCHIVE = "motevm_archive";
     inline constexpr const char *TARGET_TOOLS = "motevm_tools";
     inline constexpr const char *OBJECT_STATE_HEADER = "builder-state 1";
     inline constexpr const char *STEP_STATE_HEADER = "builder-step-state 1";

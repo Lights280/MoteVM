@@ -63,8 +63,10 @@ L0000:
 - 合法标识符（`[A-Za-z_][A-Za-z0-9_]*`）且同值字符串常量首次出现 ⇒ 输出名称。
 - 匿名的 FUNCS/GLOBALS ⇒ `anonymous`。
 - 名称不是合法标识符，或同值字符串常量重复 ⇒ 回退 `#<CONST 索引>`。
-- `.entry`/`CALL` 的函数回退是 `#<FUNCS 索引>`；`HOSTCALL` 的 import 回退同样使用
-  `#<CONST 索引>`（无法解析 import 索引时才是 `#<IMPORTS 索引>`）。
+- `.entry`/`CALL` 的函数回退是 `#<FUNCS 索引>`。
+- `.import` 的名称回退是 `#<CONST 索引>`；`HOSTCALL` 的名称回退是
+  `#<IMPORTS 索引>`，两者索引空间不同。
+- import 名称允许点分标识符（如 `file.write`），canonical 文本直接输出该名称。
 - 发生名称回退时 stderr 输出 `W004` 告警。
 
 ### 3.3 指示符
@@ -105,7 +107,7 @@ L0000:
 
 - 存在 DEBUG 段时输出 `.loc`（行号变化处）与 `.local`（`param` + 数值 `start`/`end`）。
 - `--no-debug` 省略 `.loc`/`.local`。canonical 文本无法表达 DEBUG 段，因此此时放弃 RT-1，
-  只保证 RT-2（重新汇编后可执行）。
+  只保证 RT-2（重新汇编后可执行）；`--no-debug` 与 `--check-roundtrip` 互斥（exit 1）。
 - `motedis --check-roundtrip` 对“空 DEBUG 段”有专门处理：若输入头部 DEBUG 标志置位但
   canonical 文本没有 `.loc`/`.local`，重新汇编时会强制恢复 DEBUG 段再比较。
 
@@ -153,7 +155,8 @@ motedis [options] <input.mbc>
 | `--version`, `--help` | 版本/帮助；写 stdout，exit 0 |
 
 - 输入 `-` 表示从 stdin 读取。
-- `--annotate` 与 `--check-roundtrip` 互斥 ⇒ exit 1。
+- `--annotate` 或 `--no-debug` 与 `--check-roundtrip` 互斥 ⇒ exit 1
+  （二者都会改变重新汇编的文本，无法再进行整模块字节比较）。
 - 输入与输出为同一路径（均非 stdio token）⇒ exit 1。
 - 输出先完整构建到内存，再一次性写出；文件输出使用原子替换。
 - 非法模块 ⇒ `motedis: <path>: error: <message>`，exit 2，不写输出。

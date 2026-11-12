@@ -34,7 +34,8 @@ namespace
     }
 }
 
-bool TOOL::readFile(const std::string &path, Bytes &data, std::string &error)
+bool TOOL::readFile(const std::string &path, Bytes &data, std::string &error,
+                    std::uintmax_t maxBytes)
 {
     data.clear();
     std::error_code code;
@@ -42,6 +43,11 @@ bool TOOL::readFile(const std::string &path, Bytes &data, std::string &error)
     if (code)
     {
         error = "cannot read '" + path + "': " + systemMessage(code);
+        return false;
+    }
+    if (size > maxBytes)
+    {
+        error = "file is larger than " + std::to_string(maxBytes) + " bytes";
         return false;
     }
     if (size > static_cast<std::uintmax_t>(~static_cast<std::size_t>(0)))
@@ -69,7 +75,7 @@ bool TOOL::readFile(const std::string &path, Bytes &data, std::string &error)
     return true;
 }
 
-bool TOOL::readStdin(Bytes &data, std::string &error)
+bool TOOL::readStdin(Bytes &data, std::string &error, std::uintmax_t maxBytes)
 {
     data.clear();
     std::array<char, 65536> buffer{};
@@ -80,6 +86,12 @@ bool TOOL::readStdin(Bytes &data, std::string &error)
         if (count < 0)
         {
             error = "cannot read stdin";
+            return false;
+        }
+        if (static_cast<std::uintmax_t>(count) >
+            maxBytes - static_cast<std::uintmax_t>(data.size()))
+        {
+            error = "stdin input is larger than " + std::to_string(maxBytes) + " bytes";
             return false;
         }
         data.insert(data.end(), reinterpret_cast<const byte *>(buffer.data()),

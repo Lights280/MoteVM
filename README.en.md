@@ -32,12 +32,14 @@ MoteVM ships four command-line tools plus a standalone build driver:
 | `src/motedis/` | Disassembler: `.mbc` -> canonical `.mta` text |
 | `src/motear/` | Archive tool: pack, list, verify and unpack `.mtr` |
 | `src/builder/` | Standalone build driver; can build the whole project outside CMake |
+| `tests/` | Self-contained CTest suite: parser, verifier, round-trip, archive, runtime, CLI |
 | `docs/` | User documentation: quick start, ISA, bytecode/archive formats, toolchain, build and limits |
 | `CMakeLists.txt` | Root build script; auto-discovers `src/<module>/<module>.cpp` as executable targets |
 | `LICENSE` | MIT license |
 
-> A clone contains only the files above. `tests/`, `benchmarks/`, `deepseek-cache/`,
-> and similar are local working directories and are not tracked.
+> `benchmarks/`, `plan/`, `deepseek-cache/` and similar are local working directories and
+> are not tracked; `tests/` and the CI configuration are part of the repository.
+> See [CHANGELOG.md](CHANGELOG.md) for changes.
 
 ## Requirements
 
@@ -73,7 +75,7 @@ cmake --build build --config Release
 | `MOTEVM_COMPILER` | `auto` (default), `clang`, `gcc`, `msvc` |
 | `MOTEVM_ARCH` | `native` (default), `x86`, `x64` |
 | `MOTEVM_BUILD_TOOLS` | `ON` (default); build every module under `src/` |
-| `MOTEVM_BUILD_TESTS` | `ON` (default); build `tests/` (skipped when the directory is absent) |
+| `MOTEVM_BUILD_TESTS` | `ON` (default); build the `tests/` CTest suite |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF` (default); build `benchmarks/` |
 | `MOTEVM_BUILD_FUZZERS` | `OFF` (default); build libFuzzer targets (Clang only) |
 | `MOTEVM_WERROR` | `OFF` (default); treat warnings as errors |
@@ -84,6 +86,17 @@ cmake --build build --config Release
 
 Executables are written to `build/cmake/<toolchain>-<arch>-<config>/bin/`,
 for example `build/cmake/clang-x64-release/bin/motevm`.
+
+### Tests
+
+```bash
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+`tests/` contains unit tests and CLI integration checks (exit codes,
+`--check-roundtrip`, archive round-trips, `--warn-as-error`, and so on).
+`MOTEVM_WERROR=ON` and `MOTEVM_SANITIZERS=ON` can be combined with the suite.
 
 ## Command-line tools
 
@@ -164,7 +177,8 @@ builder clean    # remove builder outputs (never CMake files)
 - The C++ `Host`/`Core` interfaces under `src/motevm/include/` are internal: no umbrella
   header, not installed as a library, and no ABI stability promise. See
   [docs/en/04-embedding-api.md](docs/en/04-embedding-api.md).
-- There are currently no git tags or CHANGELOG.
+- Changes are recorded in [CHANGELOG.md](CHANGELOG.md); release tags are created
+  by the maintainers on frozen commits.
 - All hard limits: [docs/en/08-limits.md](docs/en/08-limits.md).
 
 ## Help

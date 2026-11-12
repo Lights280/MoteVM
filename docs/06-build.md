@@ -238,15 +238,22 @@ cmake -S . -B build -G Ninja -DMOTEVM_COMPILER=gcc -DMOTEVM_ARCH=x86
 
 ## 4. 测试、基准与模糊测试状态
 
-当前仓库不包含 `tests/`、`benchmarks/` 与 `fuzz/` 目录。
+`tests/` 随仓库发布，包含单元测试与 CLI 集成检查。`benchmarks/` 与 `fuzz/`
+仍是本地工作目录。
 
-| 选项 | 默认 | 目录缺失时的行为 |
+```bash
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+| 选项 | 默认 | 行为 |
 | --- | --- | --- |
-| `MOTEVM_BUILD_TESTS=ON` | 是 | 打印 `MOTEVM_BUILD_TESTS=ON but tests/ is not present; skipping`，不产生测试目标 |
-| `MOTEVM_BUILD_BENCHMARKS=ON` | 否 | 打印 `MOTEVM_BUILD_BENCHMARKS=ON but benchmarks/ is not present; skipping` |
-| `MOTEVM_BUILD_FUZZERS=ON` | 否 | Clang 下打印 `MOTEVM_BUILD_FUZZERS=ON but fuzz/ is not present; skipping`；非 Clang 下先打印警告 |
+| `MOTEVM_BUILD_TESTS=ON` | 是 | 构建 `tests/`、调用 `enable_testing()` 并注册 `unit` / `cli` 两个 CTest 用例 |
+| `MOTEVM_BUILD_BENCHMARKS=ON` | 否 | `benchmarks/CMakeLists.txt` 存在时加入；否则打印状态消息并跳过 |
+| `MOTEVM_BUILD_FUZZERS=ON` | 否 | Clang 下加入 `fuzz/`；非 Clang 下先打印警告 |
 
-默认配置不会因为这些目录缺失而失败。
+CI 覆盖 Linux（Clang/GCC，x64/x86）、Windows/MSVC（x64/x86）、ASan/UBSan、
+`MOTEVM_WERROR=ON` 与独立 `builder` 构建。
 
 ## 5. 版本与兼容性
 
@@ -298,10 +305,17 @@ motear 0.1.0 (MTR 1.0)
    build/cmake/clang-x64-release/bin/motevm hello.mbc
    ```
 
-3. 反汇编/再汇编往返：`motedis hello.mbc -o hello.out.mta` 后重新汇编并运行，输出应与原模块一致。
+3. 运行测试：`ctest --test-dir build --output-on-failure`；再分别用
+   `-DMOTEVM_WERROR=ON`、`-DMOTEVM_SANITIZERS=ON` 各跑一次。
 
-4. 归档往返：`motear pack -o hello.mtr --module hello.mbc`、`motear verify hello.mtr`、`motear unpack hello.mtr -C out`。
+4. 反汇编/再汇编往返：`motedis --check-roundtrip hello.mbc -o hello.out.mta` 后重新汇编并运行，输出应与原模块一致。
 
-5. 检查版本一致性：`motevm`、`moteasm`、`motedis`、`motear`、`builder` 的 `--version` 均报告 `0.1.0`，格式版本分别为 MOTEBC 1.0 或 MTR 1.0。
+5. 归档往返：`motear pack -o hello.mtr --module hello.mbc`、`motear verify hello.mtr`、`motear unpack hello.mtr -C out`。
 
-6. 可选：用 `builder doctor` 确认工具链、架构与输出目录，用 `builder targets` 确认目标清单。
+6. 检查版本一致性：`motevm`、`moteasm`、`motedis`、`motear`、`builder` 的 `--version` 均报告 `0.1.0`，格式版本分别为 MOTEBC 1.0 或 MTR 1.0。
+
+7. 用 `builder doctor` / `builder targets` 确认工具链与目标清单，并运行
+   `builder --build-dir <tmp> --werror` 确认独立构建驱动能构建全部目标。
+
+8. 在打 tag 的同一提交中更新 README / 本文 / `docs/README.md` 的发布状态，
+   并把变更写入 `CHANGELOG.md`。

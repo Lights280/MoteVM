@@ -22,7 +22,7 @@
 // Layout:
 //   src/<module>/<module>.cpp   module entry (one executable target)
 //   src/<module>/include/       module headers (optional)
-//   src/include/                shared code + headers (motevm_core/motevm_tools)
+//   src/include/                shared code + headers (core/archive/tools)
 //   src/builder/include/        builder-only platform/CLI headers
 //
 // Targets: all (every module discovered under src/), <module>, builder
@@ -859,8 +859,8 @@ namespace BUILD
 
             // Shared source groups (src/include). They are compiled once and
             // linked into the modules that need them; they are not selectable
-            // user targets. Keep these lists in sync with MOTEVM_CORE_SOURCES
-            // and MOTEVM_TOOL_SOURCES in the root CMakeLists.txt.
+            // user targets. Keep these lists in sync with the MOTEVM_CORE_*,
+            // MOTEVM_ARCHIVE_* and MOTEVM_TOOL_* lists in the root CMakeLists.txt.
             const bool sharedReady = directoryExists(sharedInclude);
             if (sharedReady)
             {
@@ -877,6 +877,24 @@ namespace BUILD
                         return false;
                     }
                     core.sources.push_back(source);
+                }
+
+                Target archive;
+                archive.name = TARGET_ARCHIVE;
+                archive.internal = true;
+                archive.includes.push_back(sharedInclude);
+                archive.links.push_back(core.name);
+                for (const char *file : {"archive/archive.cpp", "archive/manifest.cpp",
+                                         "archive/name.cpp", "archive/util.cpp",
+                                         "archive/writer.cpp"})
+                {
+                    const Path source = sharedInclude / pathFromText(file);
+                    if (!fileExists(source))
+                    {
+                        error = "shared archive source is missing: '" + pathText(source) + "'";
+                        return false;
+                    }
+                    archive.sources.push_back(source);
                 }
 
                 Target tools;
@@ -899,6 +917,7 @@ namespace BUILD
                     tools.sources.push_back(source);
                 }
                 project.targets.push_back(std::move(core));
+                project.targets.push_back(std::move(archive));
                 project.targets.push_back(std::move(tools));
             }
 
@@ -943,6 +962,11 @@ namespace BUILD
                         target.links.push_back(TARGET_CORE);
                     else if (name == "moteasm" || name == "motedis")
                         target.links.push_back(TARGET_TOOLS);
+                    else if (name == "motear")
+                    {
+                        target.links.push_back(TARGET_ARCHIVE);
+                        target.links.push_back(TARGET_TOOLS);
+                    }
                 }
                 project.targets.push_back(std::move(target));
                 ++moduleCount;
@@ -2574,7 +2598,7 @@ namespace BUILD
             out << "  all        every module discovered under src/ (default)\n";
             out << "  <module>   build/<toolchain>-<arch>-<config>/bin/<module>[.exe]\n";
             out << "  builder    this tool (bin/builder[.exe])\n";
-            out << "  shared     motevm_core/motevm_tools are linked automatically\n\n";
+            out << "  shared     motevm_core/motevm_archive/motevm_tools are linked automatically\n\n";
             out << "options:\n";
             out << "  -j, --jobs N        parallel compile jobs (default: hardware concurrency)\n";
             out << "      --compiler X    clang|gcc|msvc (default: clang++ first)\n";

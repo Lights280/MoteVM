@@ -68,8 +68,11 @@ Name rules:
 - Anonymous FUNCS/GLOBALS print as `anonymous`.
 - A name that is not a valid identifier, or a duplicate string constant value, falls back to
   `#<CONST index>`.
-- `.entry`/`CALL` fall back to `#<FUNCS index>`; `HOSTCALL` import fallback also uses
-  `#<CONST index>` (only an unresolvable import index falls back to `#<IMPORTS index>`).
+- `.entry`/`CALL` fall back to `#<FUNCS index>`.
+- `.import` names fall back to `#<CONST index>`; `HOSTCALL` names fall back to
+  `#<IMPORTS index>`. The two index spaces are different.
+- Import names may be dotted identifiers such as `file.write`; canonical text
+  prints them directly.
 - A name fallback emits a `W004` warning on stderr.
 
 ### 3.3 Directives
@@ -112,7 +115,8 @@ flush left; only instructions are indented by 4 spaces.
 - With a DEBUG section, `.loc` (at line changes) and `.local` (`param` plus numeric `start`/`end`)
   are emitted.
 - `--no-debug` omits `.loc`/`.local`. Canonical text cannot express a DEBUG section, so RT-1 is
-  given up and only RT-2 (re-assembled module executes) is guaranteed.
+  given up and only RT-2 (re-assembled module executes) is guaranteed. `--no-debug` and
+  `--check-roundtrip` are mutually exclusive (exit 1).
 - `motedis --check-roundtrip` handles an "empty DEBUG section" specially: when the input header has
   the DEBUG flag set but canonical text has no `.loc`/`.local`, re-assembly forces the DEBUG section
   back before comparison.
@@ -163,7 +167,8 @@ motedis [options] <input.mbc>
 | `--version`, `--help` | Version/help; stdout, exit 0 |
 
 - An input of `-` reads stdin.
-- `--annotate` and `--check-roundtrip` are mutually exclusive and exit 1.
+- `--annotate` or `--no-debug` together with `--check-roundtrip` are mutually
+  exclusive and exit 1.
 - Input and output naming the same path (both non-stdio tokens) exit 1.
 - Output is built fully in memory and written once; file output uses atomic replace.
 - An invalid module prints `motedis: <path>: error: <message>`, exits 2, and writes no output.

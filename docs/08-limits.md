@@ -26,7 +26,7 @@
 | 块数量 | 65536 | `MEMORY::BLOCK_COUNT` | 块索引超出 0..65535 的访问失败 |
 | 地址空间 | 4 GiB | `MEMORY::ADDRESS_SPACE` = `BLOCK_COUNT * BLOCK_SIZE` | 地址越过 `ADDRESS_SPACE - 4` 时返回 `MEMORY_OVERFLOW`，核心报告 `CORE::MEMORY_FAULT`，`motevm` 退出码 3 |
 | 未分配块 | — | `MEMORY::MEMORY_UNAVAILABLE` | 访问未分配块返回该错误，核心报告 `CORE::MEMORY_FAULT`，退出码 3 |
-| 重复分配 | — | `MEMORY::BLOCK_OCCUPIED` | 分配已占用块失败；初始化阶段失败时 `motevm` 退出码 4 |
+| 重复分配 | — | — | 对已分配的块再次调用 `Memory::allocate` 是幂等的，返回 `MEMORY::OK` |
 
 ## 4. 模块（MOTEBC 1.0）
 

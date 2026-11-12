@@ -76,23 +76,51 @@ namespace
         return "null";
     }
 
+    // True when constant `index` is the first occurrence of a name the
+    // corresponding directive can spell. Import names may be dotted
+    // ("file.write"); every other name must be a plain identifier.
+    bool constantName(const PARSE::Image &image,
+                      const std::unordered_map<std::string, dword> &first, dword index,
+                      bool allowQualified, std::string &out)
+    {
+        if (index >= image.constants.size() ||
+            image.constants[index].kind != PARSE::ConstKind::string)
+            return false;
+        const std::span<const byte> payload = image.constants[index].payload;
+        const std::string content(reinterpret_cast<const char *>(payload.data()),
+                                  payload.size());
+        const auto found = first.find(constantKey(image.constants[index]));
+        const bool spellable = allowQualified ? TOOL::isQualifiedIdentifier(content)
+                                              : TOOL::isIdentifier(content);
+        if (!spellable || found == first.end() || found->second != index)
+            return false;
+        out = content;
+        return true;
+    }
+
     std::string nameRef(const PARSE::Image &image,
                         const std::unordered_map<std::string, dword> &first, dword index,
                         const char *anonymous)
     {
         if (index == NO_INDEX)
             return anonymous;
-        if (index < image.constants.size() &&
-            image.constants[index].kind == PARSE::ConstKind::string)
-        {
-            const std::span<const byte> payload = image.constants[index].payload;
-            const std::string content(reinterpret_cast<const char *>(payload.data()),
-                                      payload.size());
-            const auto found = first.find(constantKey(image.constants[index]));
-            if (TOOL::isIdentifier(content) && found != first.end() && found->second == index)
-                return content;
-        }
+        std::string name;
+        if (constantName(image, first, index, false, name))
+            return name;
         return "#" + std::to_string(index);
+    }
+
+    // .import's #n is a CONST index; HOSTCALL's #n is an IMPORTS index.
+    std::string importNameRef(const PARSE::Image &image,
+                              const std::unordered_map<std::string, dword> &first,
+                              dword constIndex, dword importIndex)
+    {
+        std::string name;
+        if (constIndex != NO_INDEX && constantName(image, first, constIndex, true, name))
+            return name;
+        if (constIndex != NO_INDEX)
+            return "#" + std::to_string(constIndex);
+        return "#" + std::to_string(importIndex);
     }
 
     bool hasMeta(const PARSE::Image &image, word key)
@@ -138,13 +166,17 @@ namespace
         return "#" + std::to_string(index);
     }
 
-    std::string importRef(const PARSE::Image &image,
-                          const std::unordered_map<std::string, dword> &first, dword index)
+    std::string hostcallRef(const PARSE::Image &image,
+                            const std::unordered_map<std::string, dword> &first,
+                            dword importIndex)
     {
-        if (index >= image.imports.size())
-            return "#" + std::to_string(index);
-        const std::string fallback = "#" + std::to_string(index);
-        return nameRef(image, first, image.imports[index].name, fallback.c_str());
+        if (importIndex >= image.imports.size())
+            return "#" + std::to_string(importIndex);
+        std::string name;
+        if (constantName(image, first, image.imports[importIndex].name, true, name))
+            return name;
+        // HOSTCALL #n is an IMPORTS index: never fall back to the CONST index.
+        return "#" + std::to_string(importIndex);
     }
 
     std::string instructionText(const PARSE::Image &image, const PARSE::Function &function,
@@ -219,7 +251,7 @@ namespace
             const dword index = (encoded >> 16) & 0xFFFFu;
             line += " " + registerName(a) + ", ";
             line += opcode == ISA::call ? functionRef(image, first, index)
-                                        : importRef(image, first, index);
+                                        : hostcallRef(image, first, index);
             break;
         }
         }
@@ -249,25 +281,27 @@ DISASM::TextResult DISASM::renderCanonical(std::span<const byte> module, bool in
         first.emplace(constantKey(image.constants[i]), static_cast<dword>(i));
 
     bool nameFallback = false;
-    const auto checkName = [&image, &first, &nameFallback](dword index) {
+    const auto checkName = [&image, &first, &nameFallback](dword index, bool allowQualified) {
         if (index == NO_INDEX || index >= image.constants.size() ||
             image.constants[index].kind != PARSE::ConstKind::string)
             return;
         const std::span<const byte> payload = image.constants[index].payload;
         const std::string content(reinterpret_cast<const char *>(payload.data()), payload.size());
         const auto found = first.find(constantKey(image.constants[index]));
-        if (!TOOL::isIdentifier(content) || found == first.end() || found->second != index)
+        const bool spellable = allowQualified ? TOOL::isQualifiedIdentifier(content)
+                                              : TOOL::isIdentifier(content);
+        if (!spellable || found == first.end() || found->second != index)
             nameFallback = true;
     };
     for (const PARSE::Import &import : image.imports)
-        checkName(import.name);
+        checkName(import.name, true);
     for (const PARSE::Global &global : image.globals)
-        checkName(global.name);
+        checkName(global.name, false);
     for (const PARSE::Function &function : image.functions)
-        checkName(function.name);
+        checkName(function.name, false);
     for (const PARSE::DebugInfo &debug : image.debug)
         for (const PARSE::LocalEntry &local : debug.locals)
-            checkName(local.name);
+            checkName(local.name, false);
 
     result.text = "; canonical text generated by motedis 1.0; format MOTEBC 1.0\n";
     if (hasMeta(image, PARSE::META_MODULE_NAME))
@@ -293,8 +327,10 @@ DISASM::TextResult DISASM::renderCanonical(std::span<const byte> module, bool in
     for (std::size_t i = 0; i < image.imports.size(); ++i)
     {
         const PARSE::Import &import = image.imports[i];
-        const std::string fallback = "#" + std::to_string(i);
-        result.text += ".import " + nameRef(image, first, import.name, fallback.c_str()) +
+        // .import #n is a CONST index; qualified names such as file.write are
+        // spelled out and accepted by the assembler.
+        result.text += ".import " + importNameRef(image, first, import.name,
+                                                  static_cast<dword>(i)) +
                        " " + std::to_string(static_cast<unsigned>(import.arity)) + "\n";
     }
 

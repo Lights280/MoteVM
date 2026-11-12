@@ -345,19 +345,19 @@ std::string DEBUG::TraceWriter::functionField(dword instructionIndex) const
     return std::to_string(function);
 }
 
-void DEBUG::TraceWriter::instruction(const Core &core, dword pc, dword word)
+void DEBUG::TraceWriter::instruction(const Core &core, dword pc, dword encoded)
 {
-    const byte opcode = static_cast<byte>(word & ISA::OPCODE_MASK);
-    const byte a = static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
-    const byte b = static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
-    const byte c = static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
+    const byte opcode = static_cast<byte>(encoded & ISA::OPCODE_MASK);
+    const byte a = static_cast<byte>((encoded >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
+    const byte b = static_cast<byte>((encoded >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
+    const byte c = static_cast<byte>((encoded >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
     const dword instructionIndex = pc / ISA::INSTRUCTION_SIZE;
 
     if (level_ == TraceLevel::exec || level_ == TraceLevel::full)
     {
         std::ostringstream line;
         line << "E seq=" << count_ << " f=" << functionField(instructionIndex) << " pc=" << pc
-             << " op=" << DISASM::format(word);
+             << " op=" << DISASM::format(encoded);
         const SourceLocation location = locate(module_, instructionIndex);
         if (location.known && !location.sourceFile.empty() && location.line != 0)
             line << " src=\"" << location.sourceFile << ':' << location.line << ':' << location.column
@@ -479,15 +479,15 @@ void DEBUG::Session::setTrace(TraceLevel level, std::ostream &out, dword limit)
         trace_ = std::make_unique<TraceWriter>(module_, level, out, limit);
 }
 
-bool DEBUG::Session::hook(void *user, const Core &core, dword pc, dword word)
+bool DEBUG::Session::hook(void *user, const Core &core, dword pc, dword encoded)
 {
-    return static_cast<Session *>(user)->onInstruction(core, pc, word);
+    return static_cast<Session *>(user)->onInstruction(core, pc, encoded);
 }
 
-bool DEBUG::Session::onInstruction(const Core &core, dword pc, dword word)
+bool DEBUG::Session::onInstruction(const Core &core, dword pc, dword encoded)
 {
     if (trace_ != nullptr)
-        trace_->instruction(core, pc, word);
+        trace_->instruction(core, pc, encoded);
     if (!interactive_)
         return false;
     if (quit_ || abort_)
@@ -584,8 +584,8 @@ bool DEBUG::Session::dispatch(const Core &core, std::istringstream &line, dword 
     if (command == "n" || command == "next")
     {
         stopDepth_ = static_cast<dword>(core.callDepth());
-        const dword word = codeWord(module_, pc / ISA::INSTRUCTION_SIZE);
-        if ((word & ISA::OPCODE_MASK) == ISA::call)
+        const dword next = codeWord(module_, pc / ISA::INSTRUCTION_SIZE);
+        if ((next & ISA::OPCODE_MASK) == ISA::call)
         {
             mode_ = Mode::Next; // step over: run until the callee returns
         }

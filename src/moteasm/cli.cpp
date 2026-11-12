@@ -16,6 +16,7 @@
 #include "common/io.hpp"
 #include "common/path.hpp"
 #include "common/text.hpp"
+#include "parse.hpp"
 
 namespace
 {
@@ -171,8 +172,10 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
     const std::string display = options.input == "-" ? "<stdin>" : options.input;
     std::vector<byte> source;
     std::string error;
-    const bool read = options.input == "-" ? TOOL::readStdin(source, error)
-                                           : TOOL::readFile(options.input, source, error);
+    const bool read =
+        options.input == "-"
+            ? TOOL::readStdin(source, error, PARSE::MAX_MODULE_BYTES)
+            : TOOL::readFile(options.input, source, error, PARSE::MAX_MODULE_BYTES);
     if (!read)
     {
         err << "moteasm: " << display << ": error: " << error << "\n";

@@ -328,6 +328,9 @@ Details:
 | `file.size` | 2 | `(pathAddr, pathLen)` → `n` / negative | Non-regular file or > 4 GiB-1 ⇒ `-3` |
 | `file.remove` | 2 | `(pathAddr, pathLen)` → `0` / negative | Regular files only; directory ⇒ `-3` |
 
+- Import names contain a dot and can be written directly (the assembler accepts
+  dotted identifiers): `.import file.write 4` / `.import file.read 4`, and
+  `HOSTCALL rDest, file.write`.
 - Without `-w`, these imports fail at **load time** (exit 2) and no instructions run.
 - With `-w`, every path goes through `Workspace::resolveRead`/`resolveWrite`: reads and writes must
   stay inside the workspace.

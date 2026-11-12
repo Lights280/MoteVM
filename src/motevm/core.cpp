@@ -67,15 +67,15 @@ word Core::merge(byte high, byte low)
     return static_cast<word>((high << 8) | low);
 }
 
-int Core::step(StackFrame *&frame, dword &pc, dword &executedLocal, dword word)
+int Core::step(StackFrame *&frame, dword &pc, dword &executedLocal, dword encoded)
 {
     if (frame == nullptr)
         return CORE::NO_ACTIVE_FRAME;
 
-    const byte instruction = static_cast<byte>(word & ISA::OPCODE_MASK);
-    const byte op1 = static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
-    const byte op2 = static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
-    const byte op3 = static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
+    const byte instruction = static_cast<byte>(encoded & ISA::OPCODE_MASK);
+    const byte op1 = static_cast<byte>((encoded >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
+    const byte op2 = static_cast<byte>((encoded >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
+    const byte op3 = static_cast<byte>((encoded >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
 
     std::array<dword, ISA::REGISTER_COUNT> &reg = frame->registers;
     int result = CORE::OK;
@@ -426,34 +426,30 @@ int Core::takeContext(StackFrame *&frame, dword &pc, dword value)
     return CORE::OK;
 }
 
-int Core::attachModule(std::span<const byte> text, std::span<const PARSE::Function> functions)
+int Core::attachModule(std::span<const byte> codeBytes,
+                       std::span<const PARSE::Function> functions)
 {
-    return attachModuleInternal(text, functions, false, {});
+    return attachModuleInternal(codeBytes, functions, false, {});
 }
 
-int Core::attachVerifiedModule(std::span<const byte> text,
-                               std::span<const PARSE::Function> functions)
+int Core::attachVerifiedModule(const Parse &module)
 {
-    return attachModuleInternal(text, functions, true, {});
+    if (!module.isValid())
+        return CORE::INVALID_TEXT;
+    return attachModuleInternal(module.text(), module.functions(), true, module.copyExtents());
 }
 
-int Core::attachVerifiedModule(std::span<const byte> text,
-                               std::span<const PARSE::Function> functions,
-                               std::span<const word> copyExtents)
-{
-    return attachModuleInternal(text, functions, true, copyExtents);
-}
-
-int Core::attachModuleInternal(std::span<const byte> text,
+int Core::attachModuleInternal(std::span<const byte> codeBytes,
                                std::span<const PARSE::Function> functions, bool isVerified,
                                std::span<const word> copyExtents)
 {
-    if (text.empty() || text.size() % ISA::INSTRUCTION_SIZE != 0)
+    if (codeBytes.empty() || codeBytes.size() % ISA::INSTRUCTION_SIZE != 0)
         return CORE::INVALID_TEXT;
     for (const PARSE::Function &fn : functions)
-        if (static_cast<qword>(fn.entry) * ISA::INSTRUCTION_SIZE + ISA::INSTRUCTION_SIZE > text.size())
+        if (static_cast<qword>(fn.entry) * ISA::INSTRUCTION_SIZE + ISA::INSTRUCTION_SIZE >
+            codeBytes.size())
             return CORE::INVALID_TARGET;
-    const int attached = attachText(text);
+    const int attached = attachText(codeBytes);
     if (attached != CORE::OK)
         return attached;
     functionTable = functions;
@@ -559,11 +555,11 @@ void Core::attachImports(std::span<const CORE::HostSlot> slots)
     hostSlots = slots;
 }
 
-int Core::attachText(std::span<const byte> text)
+int Core::attachText(std::span<const byte> codeBytes)
 {
-    if (text.empty() || text.size() % ISA::INSTRUCTION_SIZE != 0)
+    if (codeBytes.empty() || codeBytes.size() % ISA::INSTRUCTION_SIZE != 0)
         return CORE::INVALID_TEXT;
-    this->text = text;
+    text = codeBytes;
     functionTable = {};
     hostSlots = {};
     copyExtent.clear();

@@ -59,6 +59,9 @@ An unknown escape, an unterminated string, or an invalid `\x` / `\u{}` reports `
   - CONST constant index: `.import` / `.global` / `.func` names, `.local` names, `.global` init (init may reference any constant entry);
   - FUNCS index: `.entry #n`, `CALL rDest, #n`;
   - IMPORTS index: `HOSTCALL rDest, #n`.
+- Import names also accept dotted identifiers such as `file.write` (the built-in
+  `file.*` host functions). Both `.import file.write 4` and
+  `HOSTCALL rDest, file.write` are valid.
 - A label is `name:`, allowed only inside `.func`, at most one per line. A label name may be an ordinary identifier (not a reserved word) or the local form `.L` followed by `[A-Za-z0-9_]+` (for example `.L0`, `.L_loop`). A label's scope is the **current function**.
 
 ## 3. Directives
@@ -76,7 +79,7 @@ An unknown escape, an unterminated string, or an invalid `\x` / `\u{}` reports `
 | `.float` | `.float <name> <number>` | Named constant: float (integers converted through double) |
 | `.bool` | `.bool <name> true\|false` | Named constant: boolean |
 | `.null` | `.null <name>` | Named constant: null |
-| `.import` | `.import <name\|#n> <arity> [, flags=0x00]` | IMPORTS entry; the name must be a String constant; arity 0..16; flags must be 0 |
+| `.import` | `.import <name\|#n> <arity> [, flags=0x00]` | IMPORTS entry; `name` is an identifier or a dotted identifier such as `file.write`, and must be a String constant; arity 0..16; flags must be 0 |
 | `.global` | `.global <name\|#n\|anonymous> [const] [<init>]` | GLOBALS entry; init is a literal or `#CONST index` |
 | `.entry` | `.entry <name\|#n>` | Entry FUNCS index; the target arity must be 0 |
 | `.func` | `.func <name\|#n\|anonymous> <arity> <regs\|auto> [, flags=0xNN]` | Starts a function block; the compatibility form `.func <name> <regs>` also exists (arity=0) |
@@ -171,7 +174,7 @@ Mnemonics are case-insensitive. Operand formats match [ISA §2.2](../01-isa.md).
 | `call16` | `rDest, <import\|#idx>` | `HOSTCALL` |
 
 - A jump target may be a label in the current function or a `+n` / `-n` byte offset; the offset must be a multiple of 4, and the target must be inside the current function.
-- `CALL` targets a function name or `#FUNCS index`; `HOSTCALL` targets an import name or `#IMPORTS index`.
+- `CALL` targets a function name or `#FUNCS index`; `HOSTCALL` targets an import name (including dotted names such as `file.write`) or `#IMPORTS index`.
 - `TRAP` accepts a number `1..16` or one of these names: `TypeMismatch`, `DivByZero`, `IntegerOverflow`, `NumericConversion`, `IndexOutOfBounds`, `NullAccess`, `StackOverflow`, `InvalidBytecode`, `UnlinkedImport`, `OutOfMemory`, `HostError`, `FuelExhausted`, `Interrupted`, `NotImplemented`, `InternalError`, `InvalidArgument`.
 - `LLO` / `LHI` immediates are encoded as raw 16-bit patterns; canonical output uses `0x%04X`.
 
@@ -268,7 +271,7 @@ Diagnostics without a source position omit `path:line:col`. Diagnostics are sort
 | `E012` | Jump target error: offset not a multiple of 4, target outside the function, or offset does not fit int16/int24 |
 | `E013` | Wrong operand count or form; duplicate `flags=` / `start=` / `end=` |
 | `E014` | Invalid name: reserved word, constant name not an identifier, or name given as a string |
-| `E015` | Constant pool exceeds 65536 entries |
+| `E015` | Constant pool, function table, global table, import table or local table exceeds 65536 entries |
 | `E016` | Explicit `.const` and named constant declarations mixed |
 | `E017` | Explicit mode references an undeclared constant |
 | `E018` | Declaration order or location error |
@@ -282,9 +285,10 @@ Diagnostics without a source position omit `path:line:col`. Diagnostics are sort
 | `E026` | `.entry` target problem: index out of range, not found, anonymous, or arity not 0 |
 | `E027` | `.func` / `.end` structure error: nested `.func`, missing `.end`, or stray `.end` |
 | `E030` | Duplicate declaration: module name, meta key, entry, label, constant, function, import, or global name |
-| `E031` | Internal consistency/emission failure: self-check failure, section alignment/size error, or module above 4 GiB |
+| `E031` | Internal consistency/emission failure: self-check failure or section alignment/size error |
 | `E033` | Flags or source-file conflict: invalid flags, FUNCS only bit0, IMPORTS flags nonzero, or multiple different source file names |
 | `E034` | DEBUG line table error: first `.loc` after the first instruction, table not starting at pc 0, non-increasing pc, or invalid entry |
+| `E035` | Emitted module image exceeds 64 MiB |
 
 The current implementation does not use `E028`, `E029`, or `E032`.
 
@@ -292,7 +296,7 @@ The current implementation does not use `E028`, `E029`, or `E032`.
 
 | Code | Meaning |
 |---|---|
-| `W001` | Unreachable instruction after a terminator |
+| `W001` | Unreachable instruction according to control flow (including JMP/JZ/JNZ targets) |
 | `W003` | Unknown meta key, preserved verbatim |
 | `W005` | NaN constant generated from a fixed bit pattern |
 | `W006` | Absolute source path used, reducing reproducibility |

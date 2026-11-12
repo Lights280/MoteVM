@@ -92,7 +92,7 @@ Rules:
 | `MEMORY::ADDRESS_SPACE` | 4 GiB | `BLOCK_COUNT * BLOCK_SIZE` |
 
 - The `Memory` constructor allocates no blocks. Blocks are allocated on demand by `Memory::allocate(index)` and return to an unmapped state after `free(index)`.
-- Block states are `RELEASED` (unmapped), `FREE` (allocated) or `OCCUPIED`. The current allocator produces only `RELEASED` and `FREE`; `OCCUPIED` and `BLOCK_OCCUPIED` are not produced by the current runtime.
+- Block states are `RELEASED` (unmapped) or `FREE` (allocated). Calling `allocate` again for an allocated block is idempotent and returns `MEMORY::OK`.
 - A 4-byte access computes `base + displacement` in 64 bits, so a 32-bit register plus displacement cannot wrap and alias low memory. An address greater than `ADDRESS_SPACE - 4` returns `MEMORY_OVERFLOW`.
 - A 4-byte access may cross a block boundary, but both blocks involved must be allocated; otherwise the access fails.
 - A load/store to an unmapped address does not allocate a block automatically.
@@ -258,9 +258,9 @@ All APIs report ordinary errors through return codes and do not use C++ exceptio
 | Value | Name | Meaning |
 |---|---|---|
 | 0 | `OK` | Success |
-| 1 | `BLOCK_OCCUPIED` | Target block is already in the `OCCUPIED` state |
+| 1 | (reserved, unused) | — |
 | 2 | `MEMORY_UNAVAILABLE` | Block unallocated, invalid range, or buffer too small |
-| 3 | `MEMORY_OVERFLOW` | Address computation exceeds the 4 GiB address space |
+| 3 | `MEMORY_OVERFLOW` | Address computation exceeds the 4 GiB address space (including cross-block/buffer bounds) |
 
 ### 6.5 Status accessors
 

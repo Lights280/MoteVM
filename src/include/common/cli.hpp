@@ -7,6 +7,8 @@
 // Keep it header-only: motevm links only motevm_core and builder must remain
 // buildable as a single translation unit.
 
+#include <exception>
+#include <new>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -107,6 +109,24 @@ namespace TOOL
             version(out);
             return 0;
         }
-        return run(options, out, err);
+        try
+        {
+            return run(options, out, err);
+        }
+        catch (const std::bad_alloc &)
+        {
+            err << "error: out of memory\n";
+            return 4;
+        }
+        catch (const std::exception &error)
+        {
+            err << "error: " << error.what() << "\n";
+            return 4;
+        }
+        catch (...)
+        {
+            err << "error: unexpected internal failure\n";
+            return 4;
+        }
     }
 }

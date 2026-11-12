@@ -65,8 +65,8 @@ struct StackFrame
     // root frame is zeroed explicitly in Core::run. Slots above copyExtent are
     // unreachable by valid bytecode (see Core::computeCopyExtents).
     std::array<dword, ISA::REGISTER_COUNT> registers;
-    StackFrame(dword returnAddress = 0, byte returnRegister = 0)
-        : returnAddress(returnAddress), returnRegister(returnRegister) {}
+    StackFrame(dword address = 0, byte reg = 0)
+        : returnAddress(address), returnRegister(reg) {}
 };
 
 class Core
@@ -130,19 +130,18 @@ public:
     Core() = default;
     explicit Core(Memory &hostMemory) : memory(&hostMemory) {}
     ~Core() = default;
+    // A copy would share borrowed Memory/CODE/host-slot state.
+    Core(const Core &) = delete;
+    Core &operator=(const Core &) = delete;
 
 public:
     // Conservative entry: the bytecode is not assumed to be verified, so the
     // executing loop keeps every pc/target/alignment check.
     int attachModule(std::span<const byte> text, std::span<const PARSE::Function> functions);
-    // Fast entry for bytecode that passed PARSE::Verifier (Host's load path).
-    // The unguarded loop may then rely on verified control flow (aligned
-    // targets, entries inside CODE) and skip its per-instruction bounds check.
-    int attachVerifiedModule(std::span<const byte> text, std::span<const PARSE::Function> functions);
-    // Same, reusing the extents computed by the verifier (Parse::copyExtents()).
-    // A size/value mismatch falls back to the O(CODE) scan.
-    int attachVerifiedModule(std::span<const byte> text, std::span<const PARSE::Function> functions,
-                             std::span<const word> copyExtents);
+    // Fast entry for a module that Parse verified. Taking the Parse object
+    // itself (instead of a caller-supplied "verified" flag) keeps the
+    // unguarded loop from ever running unchecked bytecode.
+    int attachVerifiedModule(const Parse &module);
     void attachImports(std::span<const CORE::HostSlot> slots);
     int attachText(std::span<const byte> text);
     void detachText(void);

@@ -59,6 +59,8 @@ foo.mta (UTF-8) --moteasm--> foo.mbc (MOTEBC 1.0) --motevm--> stdout/trap
   - CONST 常量索引：`.import` / `.global` / `.func` 的名称、`.local` 名称、`.global` init（init 可指向任意常量项）；
   - FUNCS 索引：`.entry #n`、`CALL rDest, #n`；
   - IMPORTS 索引：`HOSTCALL rDest, #n`。
+- import 名称也接受点分标识符（例如 `file.write`），用于内置 `file.*` 宿主函数；
+  `.import file.write 4` 与 `HOSTCALL rDest, file.write` 都可直接书写。
 - 标签写作 `name:`，只能出现在 `.func` 内，每行至多一个。标签名可以是普通标识符（不能是保留字），也可以是 `.L` 后跟 `[A-Za-z0-9_]+` 的局部形式（如 `.L0`、`.L_loop`）。标签作用域是**当前函数**。
 
 ## 3. 指示符
@@ -76,7 +78,7 @@ foo.mta (UTF-8) --moteasm--> foo.mbc (MOTEBC 1.0) --motevm--> stdout/trap
 | `.float` | `.float <name> <number>` | 命名常量：浮点（整数按 double 转换） |
 | `.bool` | `.bool <name> true\|false` | 命名常量：布尔 |
 | `.null` | `.null <name>` | 命名常量：null |
-| `.import` | `.import <name\|#n> <arity> [, flags=0x00]` | IMPORTS 表项；名称必须是 String 常量；arity 0..16；flags 必须为 0 |
+| `.import` | `.import <name\|#n> <arity> [, flags=0x00]` | IMPORTS 表项；`name` 可以是标识符或点分标识符（如 `file.write`）；名称必须是 String 常量；arity 0..16；flags 必须为 0 |
 | `.global` | `.global <name\|#n\|anonymous> [const] [<init>]` | GLOBALS 表项；init 为字面量或 `#CONST索引` |
 | `.entry` | `.entry <name\|#n>` | 入口 FUNCS 索引；目标 arity 必须为 0 |
 | `.func` | `.func <name\|#n\|anonymous> <arity> <regs\|auto> [, flags=0xNN]` | 开始函数块；另有 `.func <name> <regs>` 兼容形式（arity=0） |
@@ -171,7 +173,7 @@ foo.mta (UTF-8) --moteasm--> foo.mbc (MOTEBC 1.0) --motevm--> stdout/trap
 | `call16` | `rDest, <import\|#idx>` | `HOSTCALL` |
 
 - 跳转目标可以是当前函数内的标签，也可以是 `+n` / `-n` 字节偏移；偏移必须是 4 的倍数，且目标必须在当前函数内。
-- `CALL` 的目标是函数名或 `#FUNCS索引`；`HOSTCALL` 的目标是导入名或 `#IMPORTS索引`。
+- `CALL` 的目标是函数名或 `#FUNCS索引`；`HOSTCALL` 的目标是导入名（可以是 `file.write` 这样的点分标识符）或 `#IMPORTS索引`。
 - `TRAP` 接受数字 `1..16` 或名称：`TypeMismatch`、`DivByZero`、`IntegerOverflow`、`NumericConversion`、`IndexOutOfBounds`、`NullAccess`、`StackOverflow`、`InvalidBytecode`、`UnlinkedImport`、`OutOfMemory`、`HostError`、`FuelExhausted`、`Interrupted`、`NotImplemented`、`InternalError`、`InvalidArgument`。
 - `LLO` / `LHI` 的立即数按原始 16 位编码；canonical 输出为 `0x%04X`。
 
@@ -268,7 +270,7 @@ moteasm: N error(s), M warning(s)
 | `E012` | 跳转目标错误：偏移非 4 的倍数、目标超出函数、偏移放不进 int16/int24 |
 | `E013` | 操作数个数或形式错误；重复 `flags=` / `start=` / `end=` |
 | `E014` | 名称非法：保留字、常量名不是标识符、名称不能是字符串 |
-| `E015` | 常量池超过 65536 项 |
+| `E015` | 常量池、函数表、全局表、导入表或局部变量表超过 65536 项 |
 | `E016` | 显式 `.const` 与命名常量声明混用 |
 | `E017` | 显式模式引用未声明的常量 |
 | `E018` | 声明顺序或位置错误 |
@@ -282,9 +284,10 @@ moteasm: N error(s), M warning(s)
 | `E026` | `.entry` 目标问题：索引越界、找不到、anonymous 或 arity 非 0 |
 | `E027` | `.func` / `.end` 结构错误：嵌套 `.func`、缺少 `.end`、孤立 `.end` |
 | `E030` | 重复声明：模块名、meta 键、entry、标签、常量、函数、导入或全局名 |
-| `E031` | 内部一致性/发射失败：自检失败、段对齐/大小错误、模块超过 4 GiB |
+| `E031` | 内部一致性/发射失败：自检失败、段对齐/大小错误 |
 | `E033` | flags 或源文件名冲突：非法 flags、FUNCS 仅 bit0、IMPORTS flags 非 0、多个不同源文件名 |
 | `E034` | DEBUG 行号表错误：首个 `.loc` 晚于首条指令、未从 pc 0 开始、pc 不递增、条目非法 |
+| `E035` | 输出模块镜像超过 64 MiB |
 
 当前实现不使用 `E028`、`E029`、`E032`。
 
@@ -292,7 +295,7 @@ moteasm: N error(s), M warning(s)
 
 | 码 | 含义 |
 |---|---|
-| `W001` | 终止指令之后存在不可达指令 |
+| `W001` | 按控制流（含 JMP/JZ/JNZ 目标）不可达的指令 |
 | `W003` | 未知 meta key，原样保留 |
 | `W005` | NaN 常量由固定位模式生成 |
 | `W006` | 使用了绝对源路径，降低可复现性 |

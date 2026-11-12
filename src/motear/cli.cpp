@@ -655,6 +655,25 @@ namespace
             std::filesystem::path path;
         };
 
+        for (const std::string &name : options.moduleFilter)
+        {
+            const ARCHIVE::Entry *entry = archive.find(name);
+            if (entry == nullptr || entry->kind != ARCHIVE::EntryKind::module)
+            {
+                err << "motear: no module entry named '" << name << "'\n";
+                return 2;
+            }
+        }
+        for (const std::string &name : options.resourceFilter)
+        {
+            const ARCHIVE::Entry *entry = archive.find(name);
+            if (entry == nullptr || entry->kind != ARCHIVE::EntryKind::resource)
+            {
+                err << "motear: no resource entry named '" << name << "'\n";
+                return 2;
+            }
+        }
+
         const bool anyFilter =
             !options.moduleFilter.empty() || !options.resourceFilter.empty();
         std::vector<Target> targets;

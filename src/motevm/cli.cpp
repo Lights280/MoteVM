@@ -107,7 +107,7 @@ namespace
         std::ostream *err = nullptr;
         dword module = 0;     // module inspected by const_addr/const_len
         qword lines = 0;      // lines written by print/print_str/eprint_str
-        dword heapCursor = 0; // bump allocator cursor (mem_alloc)
+        qword heapCursor = 0; // bump allocator cursor (mem_alloc); may reach 4 GiB
         bool heapReady = false;
     };
 
@@ -294,7 +294,7 @@ namespace
 
         if (!state->heapReady)
         {
-            state->heapCursor = static_cast<dword>(align8(state->host->stats().constantBytes));
+            state->heapCursor = align8(state->host->stats().constantBytes);
             state->heapReady = true;
         }
 
@@ -309,7 +309,7 @@ namespace
             if (state->host->memory().allocate(static_cast<int>(block)) != MEMORY::OK)
                 return NO_INDEX;
 
-        state->heapCursor = static_cast<dword>(align8(end));
+        state->heapCursor = align8(end);
         return static_cast<dword>(start);
     }
 
@@ -573,8 +573,6 @@ namespace
     {
         switch (code)
         {
-        case MEMORY::BLOCK_OCCUPIED:
-            return "block already occupied";
         case MEMORY::MEMORY_UNAVAILABLE:
             return "block unavailable";
         case MEMORY::MEMORY_OVERFLOW:
@@ -1143,7 +1141,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
         else
         {
             initialized = true;
-            hostState.heapCursor = static_cast<dword>(align8(host.stats().constantBytes));
+            hostState.heapCursor = align8(host.stats().constantBytes);
             hostState.heapReady = true;
         }
     }
