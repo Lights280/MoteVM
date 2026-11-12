@@ -1,6 +1,7 @@
 #include "core.hpp"
 #include "verifier.hpp"
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -66,11 +67,15 @@ word Core::merge(byte high, byte low)
     return static_cast<word>((high << 8) | low);
 }
 
-int Core::step(StackFrame *&frame, dword &pc, dword &executedLocal, byte instruction, byte op1,
-               byte op2, byte op3)
+int Core::step(StackFrame *&frame, dword &pc, dword &executedLocal, dword word)
 {
     if (frame == nullptr)
         return CORE::NO_ACTIVE_FRAME;
+
+    const byte instruction = static_cast<byte>(word & ISA::OPCODE_MASK);
+    const byte op1 = static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK);
+    const byte op2 = static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK);
+    const byte op3 = static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK);
 
     std::array<dword, ISA::REGISTER_COUNT> &reg = frame->registers;
     int result = CORE::OK;
@@ -423,6 +428,18 @@ int Core::takeContext(StackFrame *&frame, dword &pc, dword value)
 
 int Core::attachModule(std::span<const byte> text, std::span<const PARSE::Function> functions)
 {
+    return attachModuleInternal(text, functions, false);
+}
+
+int Core::attachVerifiedModule(std::span<const byte> text,
+                               std::span<const PARSE::Function> functions)
+{
+    return attachModuleInternal(text, functions, true);
+}
+
+int Core::attachModuleInternal(std::span<const byte> text,
+                               std::span<const PARSE::Function> functions, bool isVerified)
+{
     if (text.empty() || text.size() % ISA::INSTRUCTION_SIZE != 0)
         return CORE::INVALID_TEXT;
     for (const PARSE::Function &fn : functions)
@@ -432,6 +449,7 @@ int Core::attachModule(std::span<const byte> text, std::span<const PARSE::Functi
     if (attached != CORE::OK)
         return attached;
     functionTable = functions;
+    verified = isVerified;
     computeCopyExtents();
     return CORE::OK;
 }
@@ -528,6 +546,7 @@ int Core::attachText(std::span<const byte> text)
     hostSlots = {};
     copyExtent.clear();
     callStack.clear();
+    verified = false;
     programCounter = 0;
     status = CORE::IDLE;
     lastError = CORE::OK;
@@ -542,55 +561,360 @@ void Core::detachText(void)
     hostSlots = {};
     copyExtent.clear();
     callStack.clear();
+    verified = false;
     programCounter = 0;
     status = CORE::IDLE;
     lastError = CORE::OK;
     lastErrorPc = 0;
 }
 
-// Unguarded hot loop: no fuel, interrupt or debugger work. It returns only on
-// halt/root-ret, a hostcall (so run() can re-evaluate the guard state) or an
-// error. pc, the frame pointer and the instruction counter stay in locals.
+// Unguarded hot loop: no fuel, interrupt or debugger work. One fetch and one
+// switch dispatch per instruction; pc, the register base and the instruction
+// counter stay in registers and are only synced at exit boundaries. Hot
+// opcodes are executed inline; cold ones (div/mod/neg/float/trap/hostcall/...)
+// fall back to step() so the semantics still have a single source of truth.
+//
+// CheckBounds is true for modules attached through the conservative
+// attachModule(): every pc fetch and every computed control-flow target is
+// checked exactly like the pre-hot-path interpreter. It is false only for
+// attachVerifiedModule(), where PARSE::Verifier guarantees in-range, aligned
+// targets.
+template <bool CheckBounds>
+int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
+{
+    if (frame == nullptr)
+        return CORE::NO_ACTIVE_FRAME;
+
+    const byte *code = text.data();
+    const std::size_t size = text.size();
+    Memory *mem = memory;
+    dword ipc = pc;
+    dword count = executedLocal;
+    dword *regs = frame->registers.data();
+
+#define VM_A ((inst >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK)
+#define VM_B ((inst >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK)
+#define VM_C ((inst >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK)
+#define VM_OFF16 (signExtend16(static_cast<::word>(merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B)))))
+#define VM_OFF24 (signExtend24(VM_A | (VM_B << 8) | (VM_C << 16)))
+#define VM_FAULT(code_)                            \
+    do                                             \
+    {                                              \
+        lastError = (code_);                       \
+        lastErrorPc = ipc - ISA::INSTRUCTION_SIZE; \
+        pc = ipc;                                  \
+        executedLocal = count;                     \
+        return (code_);                            \
+    } while (0)
+// Keep conditional jumps as real branches. With the extra alignment check in
+// the conservative loop, clang otherwise if-converts `if (reg) ipc += off`
+// into cmove, which makes the next fetch address data-dependent. Verified
+// codegen already branches, so the fence is only needed for CheckBounds.
+#if defined(_MSC_VER)
+#define VM_COMPILER_BARRIER() std::atomic_signal_fence(std::memory_order_seq_cst)
+#elif defined(__GNUC__) || defined(__clang__)
+#define VM_COMPILER_BARRIER() __asm__ __volatile__("" ::: "memory")
+#else
+#define VM_COMPILER_BARRIER() ((void)0)
+#endif
+#define VM_TAKEN_BARRIER()         \
+    do                             \
+    {                              \
+        if constexpr (CheckBounds) \
+            VM_COMPILER_BARRIER(); \
+    } while (0)
+
+    for (;;)
+    {
+        ++count;
+        if constexpr (CheckBounds)
+        {
+            if (static_cast<std::size_t>(ipc) + ISA::INSTRUCTION_SIZE > size)
+            {
+                lastError = CORE::INVALID_TARGET;
+                lastErrorPc = ipc;
+                pc = ipc;
+                executedLocal = count;
+                return CORE::INVALID_TARGET;
+            }
+        }
+
+        const dword inst = loadWord(code + ipc);
+        ipc += ISA::INSTRUCTION_SIZE;
+
+        switch (inst & ISA::OPCODE_MASK)
+        {
+        case ISA::zero:
+            regs[VM_A] = 0;
+            break;
+        case ISA::load:
+            if (mem->readAt(regs[VM_A], regs[VM_B], VM_C) != MEMORY::OK)
+                VM_FAULT(CORE::MEMORY_FAULT);
+            break;
+        case ISA::sto:
+            if (mem->writeAt(regs[VM_A], regs[VM_B], VM_C) != MEMORY::OK)
+                VM_FAULT(CORE::MEMORY_FAULT);
+            break;
+        case ISA::lhi:
+            regs[VM_A] = (regs[VM_A] & 0x0000ffffu) |
+                         (static_cast<dword>(merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B)))
+                          << 16);
+            break;
+        case ISA::llo:
+            regs[VM_A] = (regs[VM_A] & 0xffff0000u) |
+                         merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B));
+            break;
+        case ISA::mov:
+            regs[VM_A] = regs[VM_B];
+            break;
+        case ISA::add:
+        case ISA::addu:
+            regs[VM_A] = regs[VM_B] + regs[VM_C];
+            break;
+        case ISA::sub:
+        case ISA::subu:
+            regs[VM_A] = regs[VM_B] - regs[VM_C];
+            break;
+        case ISA::mul:
+        case ISA::mulu:
+            regs[VM_A] = regs[VM_B] * regs[VM_C];
+            break;
+        case ISA::band:
+            regs[VM_A] = regs[VM_B] & regs[VM_C];
+            break;
+        case ISA::bor:
+            regs[VM_A] = regs[VM_B] | regs[VM_C];
+            break;
+        case ISA::bxor:
+            regs[VM_A] = regs[VM_B] ^ regs[VM_C];
+            break;
+        case ISA::bnot:
+            regs[VM_A] = ~regs[VM_B];
+            break;
+        case ISA::shl:
+            regs[VM_A] = regs[VM_B] << (regs[VM_C] & 0x1f);
+            break;
+        case ISA::shr:
+            regs[VM_A] = regs[VM_B] >> (regs[VM_C] & 0x1f);
+            break;
+        case ISA::sar:
+            regs[VM_A] = asUnsigned(asSigned(regs[VM_B]) >> (regs[VM_C] & 0x1f));
+            break;
+        case ISA::eq:
+            regs[VM_A] = regs[VM_B] == regs[VM_C];
+            break;
+        case ISA::ne:
+            regs[VM_A] = regs[VM_B] != regs[VM_C];
+            break;
+        case ISA::lt:
+            regs[VM_A] = asSigned(regs[VM_B]) < asSigned(regs[VM_C]);
+            break;
+        case ISA::le:
+            regs[VM_A] = asSigned(regs[VM_B]) <= asSigned(regs[VM_C]);
+            break;
+        case ISA::gt:
+            regs[VM_A] = asSigned(regs[VM_B]) > asSigned(regs[VM_C]);
+            break;
+        case ISA::ge:
+            regs[VM_A] = asSigned(regs[VM_B]) >= asSigned(regs[VM_C]);
+            break;
+        case ISA::ltu:
+            regs[VM_A] = regs[VM_B] < regs[VM_C];
+            break;
+        case ISA::leu:
+            regs[VM_A] = regs[VM_B] <= regs[VM_C];
+            break;
+        case ISA::gtu:
+            regs[VM_A] = regs[VM_B] > regs[VM_C];
+            break;
+        case ISA::geu:
+            regs[VM_A] = regs[VM_B] >= regs[VM_C];
+            break;
+        case ISA::jmp:
+        {
+            const int offset = VM_OFF24;
+            if constexpr (CheckBounds)
+            {
+                if (offset % ISA::INSTRUCTION_SIZE != 0)
+                    VM_FAULT(CORE::INVALID_TARGET);
+            }
+            ipc += static_cast<dword>(offset);
+            break;
+        }
+        case ISA::jz:
+        {
+            const int offset = VM_OFF16;
+            if constexpr (CheckBounds)
+            {
+                if (offset % ISA::INSTRUCTION_SIZE != 0)
+                    VM_FAULT(CORE::INVALID_TARGET);
+            }
+            if (!regs[VM_A])
+            {
+                ipc += static_cast<dword>(offset);
+                VM_TAKEN_BARRIER();
+            }
+            break;
+        }
+        case ISA::jnz:
+        {
+            const int offset = VM_OFF16;
+            if constexpr (CheckBounds)
+            {
+                if (offset % ISA::INSTRUCTION_SIZE != 0)
+                    VM_FAULT(CORE::INVALID_TARGET);
+            }
+            if (regs[VM_A])
+            {
+                ipc += static_cast<dword>(offset);
+                VM_TAKEN_BARRIER();
+            }
+            break;
+        }
+        case ISA::halt:
+            status = CORE::IDLE;
+            pc = ipc;
+            executedLocal = count;
+            return STEP_HALT;
+        case ISA::call:
+        {
+            const dword index =
+                static_cast<dword>(merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B)));
+            if (index >= functionTable.size())
+                VM_FAULT(CORE::INVALID_FUNCTION);
+            const dword target = functionTable[index].entry * ISA::INSTRUCTION_SIZE;
+            if constexpr (CheckBounds)
+            {
+                if (target >= size || size - target < ISA::INSTRUCTION_SIZE)
+                    VM_FAULT(CORE::INVALID_TARGET);
+            }
+            if (callStack.size() >= CORE::MAX_CALL_DEPTH)
+                VM_FAULT(CORE::STACK_OVERFLOW);
+            if (callStack.size() == callStack.capacity())
+            {
+                const std::size_t grown = std::max<std::size_t>(64, callStack.capacity() * 2);
+                callStack.reserve(std::min<std::size_t>(CORE::MAX_CALL_DEPTH, grown));
+                frame = &callStack.back();
+                regs = frame->registers.data();
+            }
+            callStack.emplace_back(ipc, static_cast<byte>(VM_A));
+            StackFrame &callee = callStack.back();
+            const dword copies = std::min<dword>(copyExtent[index], ISA::REGISTER_COUNT);
+            dword *dst = callee.registers.data();
+            const dword *src = frame->registers.data();
+            // The overwhelmingly common extents are small fixed windows; an
+            // unrolled copy avoids a variable-size memcpy call per CALL.
+            switch (copies)
+            {
+            case 8:
+                for (dword i = 0; i < 8; ++i)
+                    dst[i] = src[i];
+                break;
+            case 12:
+                for (dword i = 0; i < 12; ++i)
+                    dst[i] = src[i];
+                break;
+            case 16:
+                for (dword i = 0; i < 16; ++i)
+                    dst[i] = src[i];
+                break;
+            case 24:
+                for (dword i = 0; i < 24; ++i)
+                    dst[i] = src[i];
+                break;
+            case 32:
+                for (dword i = 0; i < 32; ++i)
+                    dst[i] = src[i];
+                break;
+            case 48:
+                for (dword i = 0; i < 48; ++i)
+                    dst[i] = src[i];
+                break;
+            case 64:
+                for (dword i = 0; i < 64; ++i)
+                    dst[i] = src[i];
+                break;
+            default:
+                if (copies != 0)
+                    std::memcpy(dst, src, copies * sizeof(dword));
+                break;
+            }
+            frame = &callee;
+            regs = callee.registers.data();
+            ipc = target;
+            if (callStack.size() > peakDepth)
+                peakDepth = callStack.size();
+            break;
+        }
+        case ISA::ret:
+        {
+            const dword value = regs[VM_A];
+            const byte returnRegister = frame->returnRegister;
+            const dword returnAddress = frame->returnAddress;
+            callStack.pop_back();
+            if (callStack.empty())
+            {
+                frame = nullptr;
+                regs = nullptr;
+                status = CORE::IDLE;
+                pc = ipc;
+                executedLocal = count;
+                return STEP_HALT;
+            }
+            frame = &callStack.back();
+            regs = frame->registers.data();
+            regs[returnRegister] = value;
+            ipc = returnAddress;
+            break;
+        }
+        default:
+        {
+            // Cold opcode: hand the instruction to the shared implementation.
+            const dword instructionPc = ipc - ISA::INSTRUCTION_SIZE;
+            pc = ipc;
+            executedLocal = count;
+            const int result = step(frame, pc, executedLocal, inst);
+            ipc = pc;
+            count = executedLocal;
+            regs = frame != nullptr ? frame->registers.data() : nullptr;
+            if (result == STEP_HALT)
+                return STEP_HALT;
+            if (result == STEP_HOSTCALL)
+            {
+                // A host function may have changed the guard state; only fall
+                // back to the guarded loop when that actually happened.
+                if (fuelLimit == 0 && interruptHook == nullptr && debugHook == nullptr)
+                    break;
+                return STEP_HOSTCALL;
+            }
+            if (result != CORE::OK)
+            {
+                lastError = result;
+                lastErrorPc = instructionPc;
+                executedLocal = count;
+                return result;
+            }
+            break;
+        }
+        }
+    }
+
+#undef VM_A
+#undef VM_B
+#undef VM_C
+#undef VM_OFF16
+#undef VM_OFF24
+#undef VM_FAULT
+#undef VM_TAKEN_BARRIER
+#undef VM_COMPILER_BARRIER
+}
+
 template <>
 int Core::execute<false>(StackFrame *&frame, dword &pc, dword &executedLocal)
 {
-    const byte *code = text.data();
-    const std::size_t size = text.size();
-    for (;;)
-    {
-        ++executedLocal;
-        if (static_cast<std::size_t>(pc) + ISA::INSTRUCTION_SIZE > size)
-        {
-            lastError = CORE::INVALID_TARGET;
-            lastErrorPc = pc;
-            return CORE::INVALID_TARGET;
-        }
-
-        const dword instructionPc = pc;
-        const dword word = loadWord(code + pc);
-        pc += ISA::INSTRUCTION_SIZE;
-
-        const int result = step(frame, pc, executedLocal, static_cast<byte>(word & ISA::OPCODE_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK));
-        if (result == STEP_HALT)
-            return STEP_HALT;
-        if (result == STEP_HOSTCALL)
-        {
-            // A host function may have changed the guard state; only fall back
-            // to the guarded loop when that actually happened.
-            if (fuelLimit == 0 && interruptHook == nullptr && debugHook == nullptr)
-                continue;
-            return STEP_HOSTCALL;
-        }
-        if (result != CORE::OK)
-        {
-            lastError = result;
-            lastErrorPc = instructionPc;
-            return result;
-        }
-    }
+    if (verified)
+        return executeFast<false>(frame, pc, executedLocal);
+    return executeFast<true>(frame, pc, executedLocal);
 }
 
 // Guarded loop: preserves the historical check order exactly
@@ -652,10 +976,7 @@ int Core::execute<true>(StackFrame *&frame, dword &pc, dword &executedLocal)
 
         pc += ISA::INSTRUCTION_SIZE;
 
-        const int result = step(frame, pc, executedLocal, static_cast<byte>(word & ISA::OPCODE_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK),
-                                static_cast<byte>((word >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK));
+        const int result = step(frame, pc, executedLocal, word);
         if (result == STEP_HALT)
             return STEP_HALT;
         if (result == STEP_HOSTCALL)

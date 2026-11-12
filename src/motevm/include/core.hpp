@@ -79,6 +79,7 @@ private:
     std::vector<StackFrame> callStack;              // contiguous; back() is the active frame
     std::vector<word> copyExtent;                   // per FUNCS entry: registers to copy on CALL
     dword programCounter = 0;                       // synced from the loop-local pc at boundaries
+    bool verified = false;                          // text passed PARSE::Verifier (attachVerifiedModule)
     int status = 0;
     int lastError = CORE::OK;
     dword lastErrorPc = 0; // instruction that reported lastError (debugger context)
@@ -102,10 +103,15 @@ private:
 
     int saveContext(StackFrame *&frame, dword returnAddress, byte returnRegister, word copyCount);
     int takeContext(StackFrame *&frame, dword &pc, dword value);
-    int step(StackFrame *&frame, dword &pc, dword &executedLocal, byte instruction, byte op1,
-             byte op2, byte op3); // process 1 instruction
+    int step(StackFrame *&frame, dword &pc, dword &executedLocal, dword word); // process 1 instruction
     template <bool Guarded>
     int execute(StackFrame *&frame, dword &pc, dword &executedLocal);
+    // Unguarded hot loop. CheckBounds=false is only valid for code that passed
+    // PARSE::Verifier (see attachVerifiedModule).
+    template <bool CheckBounds>
+    int executeFast(StackFrame *&frame, dword &pc, dword &executedLocal);
+    int attachModuleInternal(std::span<const byte> text,
+                             std::span<const PARSE::Function> functions, bool isVerified);
     void computeCopyExtents(void);
 
 public:
@@ -114,7 +120,13 @@ public:
     ~Core() = default;
 
 public:
+    // Conservative entry: the bytecode is not assumed to be verified, so the
+    // executing loop keeps every pc/target/alignment check.
     int attachModule(std::span<const byte> text, std::span<const PARSE::Function> functions);
+    // Fast entry for bytecode that passed PARSE::Verifier (Host's load path).
+    // The unguarded loop may then rely on verified control flow (aligned
+    // targets, entries inside CODE) and skip its per-instruction bounds check.
+    int attachVerifiedModule(std::span<const byte> text, std::span<const PARSE::Function> functions);
     void attachImports(std::span<const CORE::HostSlot> slots);
     int attachText(std::span<const byte> text);
     void detachText(void);

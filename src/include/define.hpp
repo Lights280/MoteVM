@@ -3,7 +3,12 @@
 typedef unsigned char byte, uchar, u8;
 typedef unsigned short word, ushort, u16;
 typedef unsigned int dword, uint, u32;
-typedef unsigned long long qword, ulong, u64;
+typedef unsigned long long qword, u64;
+// NOTE: do not alias `ulong` here. glibc's <sys/types.h> (pulled in by
+// <cstdlib>/<string> on Linux) defines `typedef unsigned long ulong;` under
+// __USE_MISC, and redefining it as `unsigned long long` is a hard error.
+// The other aliases below (uchar/ushort/uint/byte/word/dword) happen to match
+// glibc's types exactly, so identical redefinition is legal; `ulong` does not.
 
 // versions (single source for tools and documents)
 inline constexpr const char *MOTEVM_VERSION = "0.1.0";
