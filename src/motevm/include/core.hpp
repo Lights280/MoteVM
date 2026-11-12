@@ -72,12 +72,20 @@ struct StackFrame
 class Core
 {
 private:
+    // Precomputed per-FUNCS CALL data: target byte offset and register copies.
+    struct CallEntry
+    {
+        dword target = 0;
+        word copies = 0;
+    };
+
     Memory *memory = nullptr; // a non-owning (observer) pointer to host memory.
     std::span<const byte> text;
     std::span<const PARSE::Function> functionTable; // borrowed from Parse::Image
     std::span<const CORE::HostSlot> hostSlots;      // borrowed; bound by the loader (ADR-018)
     std::vector<StackFrame> callStack;              // contiguous; back() is the active frame
     std::vector<word> copyExtent;                   // per FUNCS entry: registers to copy on CALL
+    std::vector<CallEntry> callTable;               // per FUNCS entry: {target, copies}
     dword programCounter = 0;                       // synced from the loop-local pc at boundaries
     bool verified = false;                          // text passed PARSE::Verifier (attachVerifiedModule)
     int status = 0;
@@ -106,13 +114,17 @@ private:
     int step(StackFrame *&frame, dword &pc, dword &executedLocal, dword word); // process 1 instruction
     template <bool Guarded>
     int execute(StackFrame *&frame, dword &pc, dword &executedLocal);
-    // Unguarded hot loop. CheckBounds=false is only valid for code that passed
-    // PARSE::Verifier (see attachVerifiedModule).
-    template <bool CheckBounds>
-    int executeFast(StackFrame *&frame, dword &pc, dword &executedLocal);
+    // Hot loop shared by the unguarded and guarded paths. GuardMask bits:
+    // 1 = fuel, 2 = interrupt hook, 4 = debug hook; 0 is the unguarded loop.
+    // CheckBounds=false is only valid for code that passed PARSE::Verifier
+    // (see attachVerifiedModule); guarded loops always keep the check.
+    template <bool CheckBounds, unsigned GuardMask>
+    int executeHot(StackFrame *&frame, dword &pc, dword &executedLocal);
     int attachModuleInternal(std::span<const byte> text,
-                             std::span<const PARSE::Function> functions, bool isVerified);
+                             std::span<const PARSE::Function> functions, bool isVerified,
+                             std::span<const word> copyExtents);
     void computeCopyExtents(void);
+    void buildCallTable(void);
 
 public:
     Core() = default;
@@ -127,6 +139,10 @@ public:
     // The unguarded loop may then rely on verified control flow (aligned
     // targets, entries inside CODE) and skip its per-instruction bounds check.
     int attachVerifiedModule(std::span<const byte> text, std::span<const PARSE::Function> functions);
+    // Same, reusing the extents computed by the verifier (Parse::copyExtents()).
+    // A size/value mismatch falls back to the O(CODE) scan.
+    int attachVerifiedModule(std::span<const byte> text, std::span<const PARSE::Function> functions,
+                             std::span<const word> copyExtents);
     void attachImports(std::span<const CORE::HostSlot> slots);
     int attachText(std::span<const byte> text);
     void detachText(void);

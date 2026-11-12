@@ -428,17 +428,25 @@ int Core::takeContext(StackFrame *&frame, dword &pc, dword value)
 
 int Core::attachModule(std::span<const byte> text, std::span<const PARSE::Function> functions)
 {
-    return attachModuleInternal(text, functions, false);
+    return attachModuleInternal(text, functions, false, {});
 }
 
 int Core::attachVerifiedModule(std::span<const byte> text,
                                std::span<const PARSE::Function> functions)
 {
-    return attachModuleInternal(text, functions, true);
+    return attachModuleInternal(text, functions, true, {});
+}
+
+int Core::attachVerifiedModule(std::span<const byte> text,
+                               std::span<const PARSE::Function> functions,
+                               std::span<const word> copyExtents)
+{
+    return attachModuleInternal(text, functions, true, copyExtents);
 }
 
 int Core::attachModuleInternal(std::span<const byte> text,
-                               std::span<const PARSE::Function> functions, bool isVerified)
+                               std::span<const PARSE::Function> functions, bool isVerified,
+                               std::span<const word> copyExtents)
 {
     if (text.empty() || text.size() % ISA::INSTRUCTION_SIZE != 0)
         return CORE::INVALID_TEXT;
@@ -450,8 +458,34 @@ int Core::attachModuleInternal(std::span<const byte> text,
         return attached;
     functionTable = functions;
     verified = isVerified;
-    computeCopyExtents();
+
+    // The verifier's table is trustworthy only for a verified module of the
+    // same shape; anything else keeps the conservative CODE scan.
+    bool reusable = isVerified && copyExtents.size() == functions.size();
+    if (reusable)
+        for (word extent : copyExtents)
+            if (extent > ISA::REGISTER_COUNT)
+            {
+                reusable = false;
+                break;
+            }
+    if (reusable)
+        copyExtent.assign(copyExtents.begin(), copyExtents.end());
+    else
+        computeCopyExtents();
+    buildCallTable();
     return CORE::OK;
+}
+
+void Core::buildCallTable(void)
+{
+    const std::size_t count = functionTable.size();
+    callTable.resize(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        callTable[i].target = functionTable[i].entry * ISA::INSTRUCTION_SIZE;
+        callTable[i].copies = i < copyExtent.size() ? copyExtent[i] : 0;
+    }
 }
 
 // Calls copy the caller's whole 256-register window today, but a function's
@@ -474,7 +508,7 @@ void Core::computeCopyExtents(void)
         return;
 
     const std::size_t wordCount = text.size() / ISA::INSTRUCTION_SIZE;
-    std::vector<std::pair<dword, dword>> edges;
+    std::vector<PARSE::CallEdge> edges;
     edges.reserve(count * 2);
 
     for (std::size_t f = 0; f < count; ++f)
@@ -511,25 +545,13 @@ void Core::computeCopyExtents(void)
             {
                 const dword target = (instruction >> 16) & 0xFFFFu;
                 if (target < count)
-                    edges.emplace_back(static_cast<dword>(f), target);
+                    edges.push_back(PARSE::CallEdge{static_cast<dword>(f), target});
             }
         }
         copyExtent[f] = static_cast<word>(extent);
     }
 
-    bool changed = true;
-    while (changed)
-    {
-        changed = false;
-        for (const auto &edge : edges)
-        {
-            if (copyExtent[edge.first] < copyExtent[edge.second])
-            {
-                copyExtent[edge.first] = copyExtent[edge.second];
-                changed = true;
-            }
-        }
-    }
+    PARSE::fixpointCopyExtents(copyExtent, edges);
 }
 
 void Core::attachImports(std::span<const CORE::HostSlot> slots)
@@ -545,6 +567,7 @@ int Core::attachText(std::span<const byte> text)
     functionTable = {};
     hostSlots = {};
     copyExtent.clear();
+    callTable.clear();
     callStack.clear();
     verified = false;
     programCounter = 0;
@@ -560,6 +583,7 @@ void Core::detachText(void)
     functionTable = {};
     hostSlots = {};
     copyExtent.clear();
+    callTable.clear();
     callStack.clear();
     verified = false;
     programCounter = 0;
@@ -568,20 +592,29 @@ void Core::detachText(void)
     lastErrorPc = 0;
 }
 
-// Unguarded hot loop: no fuel, interrupt or debugger work. One fetch and one
-// switch dispatch per instruction; pc, the register base and the instruction
-// counter stay in registers and are only synced at exit boundaries. Hot
-// opcodes are executed inline; cold ones (div/mod/neg/float/trap/hostcall/...)
-// fall back to step() so the semantics still have a single source of truth.
+// Hot loop shared by the unguarded and guarded paths. One fetch and one
+// switch dispatch per instruction; pc, the register base, the instruction
+// counter (and the fuel budget when enabled) stay in registers and are only
+// synced at exit boundaries. Hot opcodes are executed inline; cold ones
+// (div/mod/neg/float/trap/breakpoint/unknown) fall back to step() so the
+// semantics still have a single source of truth.
+//
+// GuardMask bit 1 = fuel, bit 2 = interrupt hook, bit 4 = debug hook; 0 is the
+// unguarded loop. The guard outline reproduces the ADR-020 check order exactly:
+// fuel -> ++executed -> interrupt -> bounds -> fetch -> debug -> dispatch.
 //
 // CheckBounds is true for modules attached through the conservative
 // attachModule(): every pc fetch and every computed control-flow target is
 // checked exactly like the pre-hot-path interpreter. It is false only for
 // attachVerifiedModule(), where PARSE::Verifier guarantees in-range, aligned
-// targets.
-template <bool CheckBounds>
-int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
+// targets. Guarded loops always keep the check (same as the old guarded loop).
+template <bool CheckBounds, unsigned GuardMask>
+int Core::executeHot(StackFrame *&frame, dword &pc, dword &executedLocal)
 {
+    constexpr bool GUARD_FUEL = (GuardMask & 1u) != 0;
+    constexpr bool GUARD_INTERRUPT = (GuardMask & 2u) != 0;
+    constexpr bool GUARD_DEBUG = (GuardMask & 4u) != 0;
+
     if (frame == nullptr)
         return CORE::NO_ACTIVE_FRAME;
 
@@ -591,25 +624,57 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
     dword ipc = pc;
     dword count = executedLocal;
     dword *regs = frame->registers.data();
+    // Guard state is stable inside a loop segment: only a hostcall or an
+    // interrupt/debug hook can observe or change it, and those are handled
+    // below. Fuel is local so the common check costs a register decrement.
+    [[maybe_unused]] dword fuelLocal = fuelLeft;
+    [[maybe_unused]] auto interruptLocal = interruptHook;
+    [[maybe_unused]] void *interruptUserLocal = interruptUser;
+    [[maybe_unused]] CORE::DebugHook debugLocal = debugHook;
+    [[maybe_unused]] void *debugUserLocal = debugUser;
+    [[maybe_unused]] const dword guardFuelLimit = fuelLimit;
+    [[maybe_unused]] bool guardsDirty = false;
 
 #define VM_A ((inst >> ISA::OPERAND1_SHIFT) & ISA::OPERAND_MASK)
 #define VM_B ((inst >> ISA::OPERAND2_SHIFT) & ISA::OPERAND_MASK)
 #define VM_C ((inst >> ISA::OPERAND3_SHIFT) & ISA::OPERAND_MASK)
 #define VM_OFF16 (signExtend16(static_cast<::word>(merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B)))))
 #define VM_OFF24 (signExtend24(VM_A | (VM_B << 8) | (VM_C << 16)))
+#define VM_SYNC()                     \
+    do                                \
+    {                                 \
+        pc = ipc;                     \
+        executedLocal = count;        \
+        if constexpr (GUARD_FUEL)     \
+            fuelLeft = fuelLocal;     \
+    } while (0)
 #define VM_FAULT(code_)                            \
     do                                             \
     {                                              \
         lastError = (code_);                       \
         lastErrorPc = ipc - ISA::INSTRUCTION_SIZE; \
-        pc = ipc;                                  \
-        executedLocal = count;                     \
+        VM_SYNC();                                 \
         return (code_);                            \
+    } while (0)
+// A hook may have changed the guard configuration through its user pointer.
+// The change takes effect for the next instruction, exactly like the member
+// reads in the old guarded loop: finish this instruction, then let run()
+// re-select the loop.
+#define VM_GUARDS_DIRTY_CHECK()                                                        \
+    do                                                                                 \
+    {                                                                                  \
+        if constexpr (GUARD_INTERRUPT || GUARD_DEBUG)                                  \
+        {                                                                              \
+            if (fuelLimit != guardFuelLimit || interruptHook != interruptLocal ||      \
+                interruptUser != interruptUserLocal || debugHook != debugLocal ||      \
+                debugUser != debugUserLocal)                                           \
+                guardsDirty = true;                                                    \
+        }                                                                              \
     } while (0)
 // Keep conditional jumps as real branches. With the extra alignment check in
 // the conservative loop, clang otherwise if-converts `if (reg) ipc += off`
-// into cmove, which makes the next fetch address data-dependent. Verified
-// codegen already branches, so the fence is only needed for CheckBounds.
+// into cmove, which makes the next fetch address data-dependent. The same
+// fence is applied to the guarded instances.
 #if defined(_MSC_VER)
 #define VM_COMPILER_BARRIER() std::atomic_signal_fence(std::memory_order_seq_cst)
 #elif defined(__GNUC__) || defined(__clang__)
@@ -617,29 +682,67 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
 #else
 #define VM_COMPILER_BARRIER() ((void)0)
 #endif
-#define VM_TAKEN_BARRIER()         \
-    do                             \
-    {                              \
-        if constexpr (CheckBounds) \
-            VM_COMPILER_BARRIER(); \
+#define VM_TAKEN_BARRIER()                              \
+    do                                                  \
+    {                                                   \
+        if constexpr (CheckBounds || GuardMask != 0)    \
+            VM_COMPILER_BARRIER();                      \
     } while (0)
 
     for (;;)
     {
+        if constexpr (GUARD_FUEL)
+        {
+            if (fuelLocal == 0)
+            {
+                lastError = CORE::FUEL_EXHAUSTED;
+                VM_SYNC();
+                return CORE::FUEL_EXHAUSTED;
+            }
+            --fuelLocal;
+        }
+
         ++count;
+        if constexpr (GUARD_INTERRUPT)
+        {
+            executed += count;
+            count = 0;
+            programCounter = ipc;
+            if (interruptLocal(interruptUserLocal))
+            {
+                lastError = CORE::INTERRUPTED;
+                VM_SYNC();
+                return CORE::INTERRUPTED;
+            }
+            VM_GUARDS_DIRTY_CHECK();
+        }
+
         if constexpr (CheckBounds)
         {
             if (static_cast<std::size_t>(ipc) + ISA::INSTRUCTION_SIZE > size)
             {
                 lastError = CORE::INVALID_TARGET;
                 lastErrorPc = ipc;
-                pc = ipc;
-                executedLocal = count;
+                VM_SYNC();
                 return CORE::INVALID_TARGET;
             }
         }
 
         const dword inst = loadWord(code + ipc);
+        if constexpr (GUARD_DEBUG)
+        {
+            executed += count;
+            count = 0;
+            programCounter = ipc;
+            if (debugLocal(debugUserLocal, *this, ipc, inst))
+            {
+                lastError = CORE::DEBUG_BREAK;
+                lastErrorPc = ipc;
+                VM_SYNC();
+                return CORE::DEBUG_BREAK;
+            }
+            VM_GUARDS_DIRTY_CHECK();
+        }
         ipc += ISA::INSTRUCTION_SIZE;
 
         switch (inst & ISA::OPCODE_MASK)
@@ -773,16 +876,15 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
         }
         case ISA::halt:
             status = CORE::IDLE;
-            pc = ipc;
-            executedLocal = count;
+            VM_SYNC();
             return STEP_HALT;
         case ISA::call:
         {
             const dword index =
                 static_cast<dword>(merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B)));
-            if (index >= functionTable.size())
+            if (index >= callTable.size())
                 VM_FAULT(CORE::INVALID_FUNCTION);
-            const dword target = functionTable[index].entry * ISA::INSTRUCTION_SIZE;
+            const dword target = callTable[index].target;
             if constexpr (CheckBounds)
             {
                 if (target >= size || size - target < ISA::INSTRUCTION_SIZE)
@@ -799,7 +901,7 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
             }
             callStack.emplace_back(ipc, static_cast<byte>(VM_A));
             StackFrame &callee = callStack.back();
-            const dword copies = std::min<dword>(copyExtent[index], ISA::REGISTER_COUNT);
+            const dword copies = std::min<dword>(callTable[index].copies, ISA::REGISTER_COUNT);
             dword *dst = callee.registers.data();
             const dword *src = frame->registers.data();
             // The overwhelmingly common extents are small fixed windows; an
@@ -857,8 +959,7 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
                 frame = nullptr;
                 regs = nullptr;
                 status = CORE::IDLE;
-                pc = ipc;
-                executedLocal = count;
+                VM_SYNC();
                 return STEP_HALT;
             }
             frame = &callStack.back();
@@ -866,6 +967,32 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
             regs[returnRegister] = value;
             ipc = returnAddress;
             break;
+        }
+        case ISA::hostcall:
+        {
+            // Re-read the slots every call: attachImports() stays visible and
+            // the hostcall path is slow relative to the dispatch anyway.
+            const CORE::HostSlot *slots = hostSlots.data();
+            const std::size_t slotCount = hostSlots.size();
+            const dword index =
+                static_cast<dword>(merge(static_cast<byte>(VM_C), static_cast<byte>(VM_B)));
+            if (index >= slotCount || slots[index].function == nullptr ||
+                slots[index].arity < 0 || slots[index].arity > ISA::REGISTER_COUNT)
+                VM_FAULT(CORE::INVALID_IMPORT);
+            // instructionCount()/currentPc() must be observable in host code.
+            executed += count;
+            count = 0;
+            programCounter = ipc;
+            const CORE::HostSlot &slot = slots[index];
+            regs[VM_A] = slot.function(slot.user, regs, slot.arity);
+            if constexpr (GuardMask == 0)
+            {
+                // The host function may have changed the guard state.
+                if (fuelLimit == 0 && interruptHook == nullptr && debugHook == nullptr)
+                    break;
+            }
+            VM_SYNC();
+            return STEP_HOSTCALL;
         }
         default:
         {
@@ -878,24 +1005,34 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
             count = executedLocal;
             regs = frame != nullptr ? frame->registers.data() : nullptr;
             if (result == STEP_HALT)
+            {
+                VM_SYNC();
                 return STEP_HALT;
+            }
             if (result == STEP_HOSTCALL)
             {
-                // A host function may have changed the guard state; only fall
-                // back to the guarded loop when that actually happened.
-                if (fuelLimit == 0 && interruptHook == nullptr && debugHook == nullptr)
-                    break;
+                // Kept for completeness; hostcall is handled inline above.
+                VM_SYNC();
                 return STEP_HOSTCALL;
             }
             if (result != CORE::OK)
             {
                 lastError = result;
                 lastErrorPc = instructionPc;
-                executedLocal = count;
+                VM_SYNC();
                 return result;
             }
             break;
         }
+        }
+
+        if constexpr (GUARD_INTERRUPT || GUARD_DEBUG)
+        {
+            if (guardsDirty)
+            {
+                VM_SYNC();
+                return STEP_HOSTCALL;
+            }
         }
     }
 
@@ -904,7 +1041,9 @@ int Core::executeFast(StackFrame *&frame, dword &pc, dword &executedLocal)
 #undef VM_C
 #undef VM_OFF16
 #undef VM_OFF24
+#undef VM_SYNC
 #undef VM_FAULT
+#undef VM_GUARDS_DIRTY_CHECK
 #undef VM_TAKEN_BARRIER
 #undef VM_COMPILER_BARRIER
 }
@@ -913,81 +1052,46 @@ template <>
 int Core::execute<false>(StackFrame *&frame, dword &pc, dword &executedLocal)
 {
     if (verified)
-        return executeFast<false>(frame, pc, executedLocal);
-    return executeFast<true>(frame, pc, executedLocal);
+        return executeHot<false, 0>(frame, pc, executedLocal);
+    return executeHot<true, 0>(frame, pc, executedLocal);
 }
 
-// Guarded loop: preserves the historical check order exactly
+// Guarded dispatch: pick the compile-time specialization for the guard state
+// that run() observed. The hot loop preserves the historical check order
 // (fuel -> executed -> interrupt -> bounds -> fetch -> debug -> dispatch).
 template <>
 int Core::execute<true>(StackFrame *&frame, dword &pc, dword &executedLocal)
 {
-    const byte *code = text.data();
-    const std::size_t size = text.size();
-    for (;;)
+    unsigned mask = 0;
+    if (fuelLimit != 0)
+        mask |= 1u;
+    if (interruptHook != nullptr)
+        mask |= 2u;
+    if (debugHook != nullptr)
+        mask |= 4u;
+
+    switch (mask)
     {
-        if (fuelLimit != 0) // 0 = unlimited
-        {
-            if (fuelLeft == 0)
-            {
-                lastError = CORE::FUEL_EXHAUSTED;
-                return CORE::FUEL_EXHAUSTED;
-            }
-            --fuelLeft;
-        }
-
-        ++executedLocal;
-        if (interruptHook != nullptr)
-        {
-            executed += executedLocal;
-            executedLocal = 0;
-            programCounter = pc;
-            if (interruptHook(interruptUser))
-            {
-                lastError = CORE::INTERRUPTED;
-                return CORE::INTERRUPTED;
-            }
-        }
-
-        if (static_cast<std::size_t>(pc) + ISA::INSTRUCTION_SIZE > size)
-        {
-            lastError = CORE::INVALID_TARGET;
-            lastErrorPc = pc;
-            return CORE::INVALID_TARGET;
-        }
-
-        const dword instructionPc = pc;
-        const dword word = loadWord(code + pc);
-
-        // The debugger hook sees pc of the unexecuted instruction and a counter
-        // that already includes it.
-        if (debugHook != nullptr)
-        {
-            executed += executedLocal;
-            executedLocal = 0;
-            programCounter = pc;
-            if (debugHook(debugUser, *this, pc, word))
-            {
-                lastError = CORE::DEBUG_BREAK;
-                lastErrorPc = pc;
-                return CORE::DEBUG_BREAK;
-            }
-        }
-
-        pc += ISA::INSTRUCTION_SIZE;
-
-        const int result = step(frame, pc, executedLocal, word);
-        if (result == STEP_HALT)
-            return STEP_HALT;
-        if (result == STEP_HOSTCALL)
-            continue; // step() already synced executed/programCounter
-        if (result != CORE::OK)
-        {
-            lastError = result;
-            lastErrorPc = instructionPc;
-            return result;
-        }
+    case 1:
+        return executeHot<true, 1>(frame, pc, executedLocal);
+    case 2:
+        return executeHot<true, 2>(frame, pc, executedLocal);
+    case 3:
+        return executeHot<true, 3>(frame, pc, executedLocal);
+    case 4:
+        return executeHot<true, 4>(frame, pc, executedLocal);
+    case 5:
+        return executeHot<true, 5>(frame, pc, executedLocal);
+    case 6:
+        return executeHot<true, 6>(frame, pc, executedLocal);
+    case 7:
+        return executeHot<true, 7>(frame, pc, executedLocal);
+    default:
+        break;
     }
+    if (verified)
+        return executeHot<false, 0>(frame, pc, executedLocal);
+    return executeHot<true, 0>(frame, pc, executedLocal);
 }
 
 void Core::run(dword functionIndex)

@@ -2,6 +2,7 @@
 #include "verifier.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -10,34 +11,202 @@
 #include <utility>
 #include <vector>
 
+// Hardware CRC-32C. The SSE4.2 path is selected at run time; the ARM path is
+// compiled only when the target already implies the CRC extension. Both fall
+// back to the portable slicing-by-8 implementation below. Define
+// MOTEVM_CRC32C_DISABLE_HW to force the portable path (tests/CI).
+#if !defined(MOTEVM_CRC32C_DISABLE_HW)
+#if defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#define MOTEVM_CRC32C_ARM 1
+#elif (defined(_M_X64) || defined(_M_IX86)) && defined(_MSC_VER)
+#include <intrin.h>
+#include <nmmintrin.h>
+#define MOTEVM_CRC32C_X86 1
+#elif (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+#include <nmmintrin.h>
+#define MOTEVM_CRC32C_X86 1
+#endif
+#endif
+
 namespace
 {
-    // CRC-32C
-    struct Crc32cTable
+    // CRC-32C, reflected polynomial 0x82F63B78. Table 0 is the classic byte
+    // table; tables 1..7 let the portable path consume eight bytes per step.
+    struct Crc32cTables
     {
-        dword value[256]{};
-        constexpr Crc32cTable()
+        dword value[8][256]{};
+        constexpr Crc32cTables()
         {
             for (dword i = 0; i < 256; ++i)
             {
                 dword crc = i;
                 for (int bit = 0; bit < 8; ++bit)
                     crc = (crc & 1u) ? ((crc >> 1) ^ 0x82F63B78u) : (crc >> 1);
-                value[i] = crc;
+                value[0][i] = crc;
             }
+            for (std::size_t table = 1; table < 8; ++table)
+                for (std::size_t i = 0; i < 256; ++i)
+                {
+                    const dword previous = value[table - 1][i];
+                    value[table][i] = (previous >> 8) ^ value[0][previous & 0xFFu];
+                }
         }
     };
-    constexpr Crc32cTable CRC32C_TABLE{};
+    constexpr Crc32cTables CRC32C_TABLES{};
 
-    // zero the checksum field
+    dword crc32cUpdateBytewise(dword crc, const byte *data, std::size_t size)
+    {
+        for (std::size_t i = 0; i < size; ++i)
+            crc = CRC32C_TABLES.value[0][(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+        return crc;
+    }
+
+    dword crc32cUpdatePortable(dword crc, const byte *data, std::size_t size)
+    {
+        if constexpr (std::endian::native == std::endian::little)
+        {
+            while (size >= 8)
+            {
+                dword low;
+                std::memcpy(&low, data, sizeof(low));
+                crc ^= low;
+                crc = CRC32C_TABLES.value[7][crc & 0xFFu] ^
+                      CRC32C_TABLES.value[6][(crc >> 8) & 0xFFu] ^
+                      CRC32C_TABLES.value[5][(crc >> 16) & 0xFFu] ^
+                      CRC32C_TABLES.value[4][(crc >> 24) & 0xFFu] ^
+                      CRC32C_TABLES.value[3][data[4]] ^ CRC32C_TABLES.value[2][data[5]] ^
+                      CRC32C_TABLES.value[1][data[6]] ^ CRC32C_TABLES.value[0][data[7]];
+                data += 8;
+                size -= 8;
+            }
+        }
+        return crc32cUpdateBytewise(crc, data, size);
+    }
+
+#if defined(MOTEVM_CRC32C_X86)
+#if defined(__GNUC__) || defined(__clang__)
+#define MOTEVM_CRC32C_TARGET __attribute__((target("sse4.2")))
+#else
+#define MOTEVM_CRC32C_TARGET
+#endif
+
+    // CRC32 instruction semantics match the reflected table algorithm exactly:
+    // same 0xFFFFFFFF pre/post inversion at the call boundary.
+    MOTEVM_CRC32C_TARGET dword crc32cUpdateSse42(dword crc, const byte *data,
+                                                 std::size_t size)
+    {
+#if defined(__x86_64__) || defined(_M_X64)
+        while (size >= 8)
+        {
+            qword value;
+            std::memcpy(&value, data, sizeof(value));
+            crc = static_cast<dword>(_mm_crc32_u64(crc, value));
+            data += 8;
+            size -= 8;
+        }
+#endif
+        while (size >= 4)
+        {
+            dword value;
+            std::memcpy(&value, data, sizeof(value));
+            crc = _mm_crc32_u32(crc, value);
+            data += 4;
+            size -= 4;
+        }
+        while (size != 0)
+        {
+            crc = _mm_crc32_u8(crc, *data);
+            ++data;
+            --size;
+        }
+        return crc;
+    }
+
+    bool crc32cHasSse42(void)
+    {
+#if defined(_MSC_VER)
+        int info[4] = {0, 0, 0, 0};
+        __cpuid(info, 1);
+        return (info[2] & (1 << 20)) != 0;
+#else
+        return __builtin_cpu_supports("sse4.2") != 0;
+#endif
+    }
+#undef MOTEVM_CRC32C_TARGET
+#endif
+
+#if defined(MOTEVM_CRC32C_ARM)
+    dword crc32cUpdateArm(dword crc, const byte *data, std::size_t size)
+    {
+        while (size >= 8)
+        {
+            qword value;
+            std::memcpy(&value, data, sizeof(value));
+            crc = __crc32cd(crc, value);
+            data += 8;
+            size -= 8;
+        }
+        while (size >= 4)
+        {
+            dword value;
+            std::memcpy(&value, data, sizeof(value));
+            crc = __crc32cw(crc, value);
+            data += 4;
+            size -= 4;
+        }
+        while (size != 0)
+        {
+            crc = __crc32cb(crc, *data);
+            ++data;
+            --size;
+        }
+        return crc;
+    }
+#endif
+
+    dword crc32cUpdate(dword crc, const byte *data, std::size_t size)
+    {
+#if defined(MOTEVM_CRC32C_ARM)
+        return crc32cUpdateArm(crc, data, size);
+#elif defined(MOTEVM_CRC32C_X86)
+        if constexpr (std::endian::native == std::endian::little)
+        {
+            static const bool hardware = crc32cHasSse42();
+            if (hardware)
+                return crc32cUpdateSse42(crc, data, size);
+        }
+        return crc32cUpdatePortable(crc, data, size);
+#else
+        return crc32cUpdatePortable(crc, data, size);
+#endif
+    }
+
+    // The header checksum field is read as zero: CRC is streamable, so feed the
+    // three byte ranges (prefix, zeroed field, suffix) in order.
     dword crc32cOf(std::span<const byte> data, qword zeroBegin, qword zeroEnd)
     {
+        constexpr byte ZEROS[64]{};
+        const std::size_t size = data.size();
+        std::size_t begin = static_cast<std::size_t>(
+            std::min<qword>(zeroBegin, static_cast<qword>(size)));
+        std::size_t end = static_cast<std::size_t>(
+            std::min<qword>(zeroEnd, static_cast<qword>(size)));
+        if (end < begin)
+            end = begin;
+
+        const byte *bytes = data.data();
         dword crc = 0xFFFFFFFFu;
-        for (qword i = 0; i < data.size(); ++i)
+        crc = crc32cUpdate(crc, bytes, begin);
+        std::size_t zeros = end - begin;
+        while (zeros != 0)
         {
-            const byte value = (i >= zeroBegin && i < zeroEnd) ? byte{0} : data[static_cast<std::size_t>(i)];
-            crc = CRC32C_TABLE.value[(crc ^ value) & 0xFFu] ^ (crc >> 8);
+            const std::size_t chunk = std::min<std::size_t>(zeros, sizeof(ZEROS));
+            crc = crc32cUpdate(crc, ZEROS, chunk);
+            zeros -= chunk;
         }
+        if (size > end)
+            crc = crc32cUpdate(crc, bytes + end, size - end);
         return ~crc;
     }
 
@@ -101,6 +270,7 @@ namespace
 void Parse::clearImage(void)
 {
     imageData = PARSE::Image{};
+    copyExtents_.clear();
     parsed = false;
 }
 
@@ -201,16 +371,18 @@ int Parse::parse(void)
     int result = check();
     if (result == PARSE::OK)
         result = readSections();
+    std::vector<word> copyExtents;
     if (result == PARSE::OK)
     {
         PARSE::Verifier verifier;
-        result = verifier.verify(imageData);
+        result = verifier.verify(imageData, copyExtents);
     }
     if (result != PARSE::OK)
     {
         clearImage();
         return result;
     }
+    copyExtents_ = std::move(copyExtents);
     parsed = true;
     return PARSE::OK;
 }

@@ -98,6 +98,17 @@ int Host::bindImports(const Parse &module, std::vector<CORE::HostSlot> &slots)
     return HOST::OK;
 }
 
+void Host::setFuel(dword maxInstructions)
+{
+    fuelLimit = maxInstructions;
+}
+
+void Host::setInterruptHook(bool (*hook)(void *), void *user)
+{
+    interruptHook = hook;
+    interruptUser = user;
+}
+
 int Host::ensureBlocks(qword offset, qword size)
 {
     if (size == 0)
@@ -191,7 +202,8 @@ int Host::runModule(std::size_t index, CORE::DebugHook hook, void *user)
     Core &core = *lastCore;
     // Parse::parse() runs the verifier, so the loaded image is safe for the
     // unguarded fast loop's no-bounds path.
-    int result = core.attachVerifiedModule(parsed.text(), parsed.functions());
+    int result =
+        core.attachVerifiedModule(parsed.text(), parsed.functions(), parsed.copyExtents());
     if (result != CORE::OK)
     {
         hostStats.result = result;
@@ -199,6 +211,8 @@ int Host::runModule(std::size_t index, CORE::DebugHook hook, void *user)
     }
 
     core.attachImports(imports[index]);
+    core.setFuel(fuelLimit);
+    core.setInterruptHook(interruptHook, interruptUser);
     core.setDebugHook(hook, user);
     core.run(parsed.entryFunction());
     core.setDebugHook(nullptr, nullptr); // do not keep a dangling user pointer

@@ -57,6 +57,9 @@ private:
     dword lastUnlinkedIndex = 0; // diagnostics for HOST::UNLINKED_IMPORT
     std::string lastUnlinkedName;
     int lastUnlinkedArity = 0;
+    dword fuelLimit = 0; // 0 = unlimited; forwarded to each run's Core (ADR-020)
+    bool (*interruptHook)(void *) = nullptr;
+    void *interruptUser = nullptr;
 
 private:
     int ensureBlocks(qword offset, qword size);
@@ -78,6 +81,10 @@ public:
     int load(const std::string &path, const std::string &displayPath);
     int load(const std::vector<std::string> &paths);
     int initMemory(void);
+    // Guard configuration forwarded to the Core created by each run (ADR-020).
+    // Both default to disabled; setting them never changes the unguarded fast path.
+    void setFuel(dword maxInstructions);                     // 0 = unlimited
+    void setInterruptHook(bool (*hook)(void *), void *user); // true => stop
     int run(void);                    // every loaded module entry, in load order
     int runModule(std::size_t index); // one module entry (index < moduleCount())
     // Same, with an optional debugger hook (plan/self/debug.md). The Core that ran

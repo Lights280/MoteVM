@@ -279,6 +279,7 @@ class Parse
 private:
     std::vector<byte> buffer; // file bytes
     PARSE::Image imageData;   // views into buffer
+    std::vector<word> copyExtents_; // per FUNCS entry; computed during verification
     bool parsed = false;
 
 private:
@@ -320,6 +321,9 @@ public:
     std::span<const byte> entryText(void) const;                                           // entry body (tools)
     std::span<const PARSE::Function> functions(void) const { return imageData.functions; } // FUNCS table
     std::span<const PARSE::Import> imports(void) const { return imageData.imports; }       // IMPORTS table
+    // Per-FUNCS register-copy extents (CALL graph max closure), ready for
+    // Core::attachVerifiedModule. Empty until parse() succeeds.
+    std::span<const word> copyExtents(void) const { return copyExtents_; }
     dword entryFunction(void) const { return imageData.header.entry; }                     // FUNCS index
     dword entryPc(void) const;                                                             // CODE instruction index
     bool hasDebug(void) const;

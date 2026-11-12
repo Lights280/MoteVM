@@ -1,7 +1,10 @@
 #include "verifier.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -110,6 +113,25 @@ const PARSE::OpInfo *PARSE::opcodeInfo(byte opcode)
     return info.known ? &info : nullptr;
 }
 
+void PARSE::fixpointCopyExtents(std::vector<word> &extents, std::span<const CallEdge> edges)
+{
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (const CallEdge &edge : edges)
+        {
+            if (edge.caller >= extents.size() || edge.callee >= extents.size())
+                continue;
+            if (extents[edge.caller] < extents[edge.callee])
+            {
+                extents[edge.caller] = extents[edge.callee];
+                changed = true;
+            }
+        }
+    }
+}
+
 int PARSE::Verifier::verify(const Image &target)
 {
     image = &target;
@@ -136,6 +158,114 @@ int PARSE::Verifier::verify(const Image &target)
     return PARSE::OK;
 }
 
+// One in-order sweep: gap words get V51 only, function bodies get V51 plus
+// V53..V62. Function ranges do not overlap (enforced by Parse::readFunc), so a
+// sorted range list lets every word be decoded exactly once. Any malformed
+// image whose ranges are unsorted/overlapping/out of bounds falls back to the
+// original two-pass verifier, preserving its behaviour.
+int PARSE::Verifier::verify(const Image &target, std::vector<word> &copyExtents)
+{
+    image = &target;
+    const qword words = image->code.size() / ISA::INSTRUCTION_SIZE;
+    const std::size_t count = image->functions.size();
+    copyExtents.assign(count, 0);
+
+    std::vector<std::pair<dword, dword>> ranges; // { entry, function index }
+    ranges.reserve(count);
+    bool rangesValid = true;
+    for (dword i = 0; i < static_cast<dword>(count); ++i)
+    {
+        const Function &fn = image->functions[i];
+        const qword begin = fn.entry;
+        const qword end = static_cast<qword>(fn.entry) + fn.instr;
+        if (fn.instr == 0 || begin > words || end > words)
+        {
+            rangesValid = false;
+            break;
+        }
+        ranges.emplace_back(fn.entry, i);
+    }
+    if (rangesValid)
+    {
+        std::sort(ranges.begin(), ranges.end(),
+                  [](const std::pair<dword, dword> &left, const std::pair<dword, dword> &right)
+                  { return left.first < right.first; });
+        for (std::size_t i = 1; i < ranges.size(); ++i)
+        {
+            const qword previousEnd =
+                static_cast<qword>(ranges[i - 1].first) +
+                image->functions[ranges[i - 1].second].instr;
+            if (previousEnd > ranges[i].first)
+            {
+                rangesValid = false;
+                break;
+            }
+        }
+    }
+    if (!rangesValid)
+    {
+        copyExtents.clear();
+        return verify(target);
+    }
+
+    for (dword i = 0; i < static_cast<dword>(count); ++i)
+    {
+        dword extent = image->functions[i].regcnt;
+        if (extent == 0 || extent > ISA::REGISTER_COUNT)
+            extent = ISA::REGISTER_COUNT;
+        copyExtents[i] = static_cast<word>(extent);
+    }
+
+    const auto decodes = [this](qword index)
+    {
+        const dword instruction = at32(image->code, index * ISA::INSTRUCTION_SIZE);
+        const PARSE::OpInfo *info = PARSE::opcodeInfo(static_cast<byte>(instruction & 0xFFu));
+        return info != nullptr && unusedFieldsZero(instruction, *info);
+    };
+
+    std::vector<CallEdge> edges;
+    edges.reserve(count * 2);
+
+    qword position = 0;
+    for (const std::pair<dword, dword> &range : ranges)
+    {
+        const dword entry = range.first;
+        const Function &fn = image->functions[range.second];
+        const qword end = static_cast<qword>(entry) + fn.instr;
+
+        for (; position < entry; ++position)
+            if (!decodes(position))
+                return PARSE::BAD_CODE;
+
+        const OpInfo *lastInfo = nullptr;
+        for (; position < end; ++position)
+        {
+            const dword instruction = at32(image->code, position * ISA::INSTRUCTION_SIZE);
+            const OpInfo *info = opcodeInfo(static_cast<byte>(instruction & 0xFFu));
+            if (info == nullptr || !unusedFieldsZero(instruction, *info))
+                return PARSE::BAD_CODE;
+            const int result = verifyWordWith(static_cast<dword>(position), fn, instruction, *info);
+            if (result != PARSE::OK)
+                return result;
+            if ((instruction & 0xFFu) == static_cast<dword>(ISA::call))
+            {
+                const dword callee = (instruction >> 16) & 0xFFFFu;
+                if (callee < count)
+                    edges.push_back(CallEdge{range.second, callee});
+            }
+            lastInfo = info;
+        }
+        if (lastInfo == nullptr || !lastInfo->terminator)
+            return PARSE::BAD_CODE;
+    }
+    for (; position < words; ++position)
+        if (!decodes(position))
+            return PARSE::BAD_CODE;
+
+    fixpointCopyExtents(copyExtents, edges);
+    return PARSE::OK;
+}
+
 int PARSE::Verifier::verifyFunction(dword index)
 {
     const PARSE::Function &fn = image->functions[index];
@@ -157,8 +287,7 @@ int PARSE::Verifier::verifyFunction(dword index)
 
 int PARSE::Verifier::verifyWord(dword pc, const Function &fn, dword instruction)
 {
-    const byte opcode = static_cast<byte>(instruction & 0xFFu);
-    const PARSE::OpInfo *info = PARSE::opcodeInfo(opcode);
+    const PARSE::OpInfo *info = PARSE::opcodeInfo(static_cast<byte>(instruction & 0xFFu));
     if (info == nullptr)
         return PARSE::BAD_CODE;
 
@@ -166,17 +295,32 @@ int PARSE::Verifier::verifyWord(dword pc, const Function &fn, dword instruction)
     if (!unusedFieldsZero(instruction, *info))
         return PARSE::BAD_CODE;
 
+    return verifyWordWith(pc, fn, instruction, *info);
+}
+
+// Caller already decoded the opcode and checked the unused fields (L1).
+#if defined(_MSC_VER)
+#define MOTEVM_VERIFIER_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define MOTEVM_VERIFIER_INLINE inline __attribute__((always_inline))
+#else
+#define MOTEVM_VERIFIER_INLINE inline
+#endif
+MOTEVM_VERIFIER_INLINE int PARSE::Verifier::verifyWordWith(dword pc, const Function &fn,
+                                                           dword instruction, const OpInfo &info)
+{
+    const byte opcode = static_cast<byte>(instruction & 0xFFu);
     const byte a = static_cast<byte>((instruction >> 8) & 0xFFu);
     const byte b = static_cast<byte>((instruction >> 16) & 0xFFu);
     const byte c = static_cast<byte>((instruction >> 24) & 0xFFu);
     const dword regLimit = fn.regcnt; // 1..256
 
     // V53
-    if ((info->regMask & 0x1) != 0 && a >= regLimit)
+    if ((info.regMask & 0x1) != 0 && a >= regLimit)
         return PARSE::BAD_CODE;
-    if ((info->regMask & 0x2) != 0 && b >= regLimit)
+    if ((info.regMask & 0x2) != 0 && b >= regLimit)
         return PARSE::BAD_CODE;
-    if ((info->regMask & 0x4) != 0 && c >= regLimit)
+    if ((info.regMask & 0x4) != 0 && c >= regLimit)
         return PARSE::BAD_CODE;
 
     switch (opcode)
@@ -234,3 +378,4 @@ int PARSE::Verifier::verifyWord(dword pc, const Function &fn, dword instruction)
     }
     return PARSE::OK;
 }
+#undef MOTEVM_VERIFIER_INLINE
