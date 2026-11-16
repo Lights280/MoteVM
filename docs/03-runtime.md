@@ -11,6 +11,7 @@
 | 组件 | 文件 | 职责 |
 |---|---|---|
 | `Parse` | `src/include/parse.*` | 读取并校验 `.mbc` 容器，拥有模块字节缓冲区 |
+| `ARCHIVE::Archive` | `src/include/archive/*` | 读取并校验 `.mtr` 归档；向 `Host::loadBytes` 提供只读模块字节视图 |
 | `PARSE::Verifier` | `src/include/verifier.*` | 校验指令流、控制流目标和 FUNCS/CODE 交叉表 |
 | `Host` | `src/motevm/host.*` | 模块注册、导入绑定、常量播种、运行编排 |
 | `Core` | `src/motevm/core.*` | 一次执行：帧、pc、指令、燃料与钩子 |
@@ -21,7 +22,7 @@
 链接事实：
 
 - 运行时源文件没有独立的库目标；它们被编译进 `motevm` 可执行文件。
-- `motevm_core` 是静态库，包含 `Parse`、`Verifier`、`Disasm`（源文件在 `src/include`）。
+- `motevm_core` 是静态库，包含 `Parse`、`Verifier`、`Disasm` 与 MTR 读取器 `ARCHIVE::Archive`（源文件在 `src/include`）。
 - `motevm_tools` 是静态库，包含基于 `motevm_core` 的汇编/反汇编工具链。
 - 没有公开总头文件；直接使用时包含具体头文件（见 [04 · 嵌入 API](04-embedding-api.md)）。
 
@@ -72,6 +73,7 @@ Host::error() / Core::error()           Read the final status
 - 必须在所有 `load()` 之后、第一次 `runModule()` 之前调用 `initMemory()`。`initMemory()` 每次都会新建 `Memory` 并从头播种，不会为之后加载的模块补种常量。
 - `Parse::parse()` 内部运行 `PARSE::Verifier`；因此 `Host` 交给 `Core` 的模块总是已验证。直接使用 `Core` 的调用者自行负责这一点（见 §4.2）。
 - `Host::run()` 按加载顺序运行每个模块的入口。CLI 只运行入口模块，因此使用 `runModule(0)`。
+- `Host::loadBytes(span, displayName)` 与 `load(path)` 走同一条 `Parse`/`bindImports` 路径，只是模块字节来自内存；`.mtr` 入口用它装载归档内的 module 条目。
 
 ### 2.2 Host 与 Core 的关系
 

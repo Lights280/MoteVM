@@ -26,11 +26,11 @@ MoteVM ships four command-line tools plus a standalone build driver:
 
 | Path | Description |
 | --- | --- |
-| `src/include/` | Shared code: `motevm_core` (module loading/verification/disassembly), `motevm_tools` (assembler and tooling infrastructure) |
+| `src/include/` | Shared code: `motevm_core` (module loading/verification/disassembly, MTR reader), `motevm_tools` (assembler and tooling infrastructure) |
 | `src/motevm/` | VM runtime, memory management, host interface and debugger |
 | `src/moteasm/` | Assembler: `.mta` source -> `.mbc` |
 | `src/motedis/` | Disassembler: `.mbc` -> canonical `.mta` text |
-| `src/motear/` | Archive tool: pack, list, verify and unpack `.mtr`; MTR container implementation (module-private) |
+| `src/motear/` | Archive tool: pack, list, verify and unpack `.mtr`; MTR writer (module-private) |
 | `src/builder/` | Standalone build driver; can build the whole project outside CMake |
 | `tests/` | Local CTest suite (not tracked): parser, verifier, round-trip, archive, runtime, CLI; lives in `deepseek-cache/tests/` here |
 | `docs/` | User documentation: quick start, ISA, bytecode/archive formats, toolchain, build and limits |
@@ -109,6 +109,7 @@ motevm hello.mbc                              # run; -s stats, -d debug, -i inte
 # output: hello, mote
 motedis hello.mbc                             # disassemble to canonical text
 motear pack -o hello.mtr --module hello.mbc   # package
+motevm hello.mtr                              # run the archive entry directly
 motear list hello.mtr --verify                # list and verify an archive
 ```
 
@@ -118,7 +119,7 @@ reference in [docs/en/05-toolchain.md](docs/en/05-toolchain.md).
 
 ### `motevm` common options
 
-Usage: `motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_parameters]`
+Usage: `motevm [extern_parameters] <entry_mbc_module|entry_mtr_archive> [ext_mbc_modules] [intern_parameters]`
 
 | Option | Description |
 | --- | --- |
@@ -128,6 +129,7 @@ Usage: `motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_
 | `-i, --interactive` | stop at entry and read debugger commands from stdin |
 | `--step` | stop before the first instruction (implies `--interactive`) |
 | `--break SPEC` | set a breakpoint (repeatable): `#index`, `offset`, `function[:offset]` |
+| `--entry NAME` | select the entry module inside a `.mtr` archive (default: manifest key 3) |
 | `--trace LVL` | instruction trace: `off`, `call`, `exec`, `full` (default: `off`) |
 | `--trace-file PATH` | trace target (default: stderr, `-` = stdout) |
 | `--trace-limit N` | stop recording after N trace lines (0 = unlimited) |

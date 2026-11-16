@@ -9,19 +9,20 @@ philosophy are in [05 · Toolchain Reference](../05-toolchain.md) §8.
 ## 1. Syntax
 
 ```text
-motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_parameters]
+motevm [extern_parameters] <entry_mbc_module|entry_mtr_archive> [ext_mbc_modules] [intern_parameters]
 ```
 
 | Segment | Position | Meaning |
 |---|---|---|
 | `extern_parameters` | Before the entry module | Host-level options, see §2 |
-| `<entry_mbc_module>` | First non-option token | The only module that executes |
+| `<entry_mbc_module\|entry_mtr_archive>` | First non-option token | The only executed entry; a `.mtr` suffix selects archive loading |
 | `[ext_mbc_modules]` | Consecutive tokens after the entry that end with `.mbc` | External modules: loaded into the constant pool, **not executed** |
 | `[intern_parameters]` | All remaining tokens | Reserved for scripts; parsed and currently ignored |
 
 - The `.mbc` suffix is case-insensitive and must be longer than 4 characters (a bare `.mbc` is not a
   module token).
 - The entry module itself does not need to end with `.mbc`.
+- An entry ending in `.mtr` (case-insensitive) is treated as an MTR archive: see `--entry` in §2 and the pipeline in §4.
 - Options are parsed only in the extern segment; tokens starting with `-` after the entry belong to
   intern parameters and are not treated as options.
 - `--` ends the extern segment; the next token becomes the entry module even if it starts with `-`.
@@ -38,6 +39,7 @@ motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_paramete
 | `-i`, `--interactive` | Stop before the first entry instruction and enter the REPL |
 | `--step` | Stop before the first instruction (implies `--interactive`) |
 | `--break SPEC` | Set a breakpoint, repeatable; syntax in §11.1 |
+| `--entry NAME` | `.mtr` entries only: select the entry module by in-archive name; when omitted, manifest key 3 is used, otherwise the package must contain exactly one module |
 | `--trace LVL` | Instruction trace: `off` (default) / `call` / `exec` / `full` |
 | `--trace-file PATH` | Trace target; default stderr, `-` = stdout; with `-w` the path must stay inside the workspace |
 | `--trace-limit N` | Record at most N lines (0 = unlimited) |
@@ -51,6 +53,8 @@ Rules:
 - Long options accept `--name=value`; `-w` takes the next token verbatim (even if it starts with `-`).
 - Missing/empty values for `--break`/`--trace-file`, invalid `--trace`/`--trace-limit` values, and an
   empty `--workspace=` are usage errors (exit 1): usage text goes to stderr and stdout stays empty.
+- `--entry` requires a `.mtr` entry, and a `.mtr` entry cannot be followed by external `.mbc` modules
+  (both are usage errors, exit 1).
 - Unknown options and a missing entry module are usage errors (exit 1).
 
 ### 2.1 Workspace
@@ -102,6 +106,9 @@ workspace check (-w)            root unavailable -> exit 2; default -> stdio onl
 register built-in host funcs    print/print_str/...; add file.* when -w is given
 Host::load(entry + ext modules) path outside -> exit 2 ("outside workspace")
                                 failure -> exit 2 (PARSE 1..7; HOST 102 = unlinked import)
+.mtr entry                      Archive::parse first (exit 2 on ARCHIVE 1..12),
+                                then Host::loadBytes per module (same PARSE/HOST codes);
+                                asset.* registered before the first load
 Host::initMemory()              failure -> exit 4
 Host::runModule(0)              runs the entry module only; installs debug hooks as requested
                                 DEBUG_STOP + quit -> exit 0; abort -> exit 3
@@ -113,6 +120,9 @@ Host::runModule(0)              runs the entry module only; installs debug hooks
   executed and cannot be called by the entry module (`Core::call` resolves only within the single
   module's FUNCS).
 - An unregistered import fails at **load time** (`HOST::UNLINKED_IMPORT` ⇒ exit 2).
+- A `.mtr` entry selects its entry module (`--entry` → manifest key 3 → the only module) and loads it
+  first; the other modules load in archive name order but do not execute. Archive resources are not
+  governed by `-w`, and they cannot be used to reach the filesystem.
 - `-d` module summaries are printed only after both loading and memory initialization succeed; on a
   load failure, `--status` covers only the modules that were loaded.
 
@@ -279,6 +289,8 @@ under `-d`; they are **not passed to the VM** and do not affect execution.
   execution.
 - Script file capability is limited to `file.*` under `-w`; there is no `io.open`, directory
   traversal, or standard-stream handle API.
+- Archive resource capability is the read-only `asset.*` available only when running a `.mtr`; there
+  is no enumeration, case folding, or path resolution.
 - Without `-w`, module files explicitly named on the command line may still be loaded from any path;
   that is CLI input, not a script capability.
 - Only a single workspace root is supported.
@@ -339,13 +351,26 @@ Details:
 - A single read/write is limited to 16 MiB; files are always opened in binary mode with no newline
   translation.
 
-### 10.3 Error Codes
+### 10.3 Registered Only for a `.mtr` Entry (`asset.*`)
+
+| Name | Arity | Arguments → Return | Notes |
+|---|---|---|---|
+| `asset.has` | 2 | `(nameAddr, nameLen)` → `1`/`0` / negative | Whether an exact-name resource entry exists |
+| `asset.size` | 2 | `(nameAddr, nameLen)` → `n` / negative | Resource byte count; missing ⇒ `-4` |
+| `asset.read` | 4 | `(nameAddr, nameLen, bufAddr, maxLen)` → `n` / negative | Copies at most `maxLen` bytes and returns the count; invalid destination ⇒ `-5` |
+
+- Only `kind = resource` entries are exposed; module bytes and the manifest are unreadable (ADR-033).
+- Names are matched byte-exactly with length 1..1024; no case folding and no path resolution.
+- `maxLen > 16 MiB` ⇒ `-5`; a zero-length resource returns `0`.
+- A loose `.mbc` that imports these names fails at load time (`UNLINKED_IMPORT`).
+
+### 10.4 Error Codes
 
 | Value | Meaning |
 |---|---|
 | `0` | Success |
 | `-3` | System I/O failure (open/read/write/remove failure, missing parent directory, target is not a regular file) |
-| `-4` | Denied (path outside the workspace / no workspace) |
+| `-4` | Denied (path outside the workspace / no workspace / archive resource missing) |
 | `-5` | Bad argument (path length 0 or >4096, embedded NUL, buffer out of range, single I/O >16 MiB; arity mismatch where applicable) |
 | `0xFFFFFFFF` | Query failure (`const_addr`/`const_len`/`mem_alloc`) |
 

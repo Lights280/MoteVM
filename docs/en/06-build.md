@@ -36,7 +36,7 @@ cmake --build build
 | `MOTEVM_BUILD_TOOLS` | `ON` | `ON`, `OFF` | Build the module executables discovered under `src/`. With `OFF` the three static libraries are still built, but no tool executables are produced. |
 | `MOTEVM_BUILD_TESTS` | `ON` | `ON`, `OFF` | Build the test suite. The directory comes from `MOTEVM_TEST_DIR` (default `tests/`); `add_subdirectory` and CTest run only when it contains a `CMakeLists.txt`, otherwise a status message is printed and the suite is skipped (CTest then has no cases). |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF` | `ON`, `OFF` | Build `benchmarks/`. Added only when `benchmarks/CMakeLists.txt` exists; otherwise a status message is printed and the directory is skipped. |
-| `MOTEVM_BUILD_FUZZERS` | `OFF` | `ON`, `OFF` | Build libFuzzer targets; Clang only. A non-Clang compiler prints a warning and skips; a missing `fuzz/CMakeLists.txt` prints a status message and skips. |
+| `MOTEVM_BUILD_FUZZERS` | `OFF` | `ON`, `OFF` | Build libFuzzer targets; Clang only. A non-Clang compiler prints a warning and skips; the directory comes from `MOTEVM_FUZZ_DIR` (default `fuzz/`), and a missing one prints a status message and skips. |
 | `MOTEVM_WERROR` | `OFF` | `ON`, `OFF` | Treat warnings as errors: adds `/WX` for MSVC and `-Werror` for GCC/Clang. |
 | `MOTEVM_SANITIZERS` | `OFF` | `ON`, `OFF` | Enable ASan/UBSan. GCC/Clang use `-fsanitize=address,undefined`; MSVC enables ASan only. |
 | `MOTEVM_INSTALL` | `OFF` | `ON`, `OFF` | Generate install rules. See §2.6. |
@@ -53,10 +53,10 @@ Two static libraries are excluded from module discovery:
 
 | Target | Type | Sources | Dependencies |
 | --- | --- | --- | --- |
-| `motevm_core` (alias `motevm::core`) | STATIC | `src/include/parse.cpp`, `verifier.cpp`, `disasm.cpp` | none |
+| `motevm_core` (alias `motevm::core`) | STATIC | `src/include/parse.cpp`, `verifier.cpp`, `disasm.cpp`, `archive/*.cpp` | none |
 | `motevm_tools` | STATIC | `src/include/asm/*.cpp`, `common/*.cpp`, `dis/*.cpp` | PUBLIC `motevm_core` |
 
-Both libraries expose `src/include` as a PUBLIC include directory and require C++20. Code used by a single module stays inside that module: the MTR container sources live in `src/motear/` with headers in `src/motear/include/`, and are compiled straight into the `motear` executable.
+Both libraries expose `src/include` as a PUBLIC include directory and require C++20. The MTR reader lives in `src/include/archive/` (shared by `motear` and `motevm`); the writer, used only by `motear`, stays in `src/motear/` with headers in `src/motear/include/` and is compiled straight into the `motear` executable.
 
 Executable targets are discovered from directories: every direct child of `src/` (except `include`) is a module, the directory name must match `[a-z][a-z0-9_]*`, and it must contain `<module>.cpp` as the entry point. The module's `*.cpp` files are collected recursively, excluding files under `include/`.
 
@@ -250,7 +250,22 @@ ctest --test-dir build --output-on-failure
 | --- | --- | --- |
 | `MOTEVM_BUILD_TESTS=ON` | yes | Builds `MOTEVM_TEST_DIR` (default `tests/`), calls `enable_testing()` and registers the `unit` and `cli` CTest cases; skipped when the directory is absent |
 | `MOTEVM_BUILD_BENCHMARKS=ON` | no | Adds `benchmarks/CMakeLists.txt` when present; otherwise prints a status message and skips |
-| `MOTEVM_BUILD_FUZZERS=ON` | no | Adds `fuzz/` with Clang; other compilers print a warning first |
+| `MOTEVM_BUILD_FUZZERS=ON` | no | Adds `MOTEVM_FUZZ_DIR` (default `fuzz/`) with Clang; other compilers print a warning first |
+
+The fuzz targets are `fuzz_parse` (MOTEBC parser/verifier) and `fuzz_archive` (MTR reader, including
+verification of every module entry). Each harness rewrites the container CRC after mutation, matching
+the threat model where an attacker can supply a valid checksum; without that, random mutations stop at
+`BAD_CHECKSUM`. Configure with `MOTEVM_SANITIZERS=ON` as well so `motevm_core` is instrumented:
+
+```bash
+cmake -S . -B build-fuzz -G Ninja -DMOTEVM_COMPILER=clang -DMOTEVM_SANITIZERS=ON \
+      -DMOTEVM_BUILD_FUZZERS=ON -DMOTEVM_FUZZ_DIR=$PWD/deepseek-cache/fuzz
+cmake --build build-fuzz
+build-fuzz/bin/fuzz_parse   deepseek-cache/fuzz/corpus/parse
+build-fuzz/bin/fuzz_archive deepseek-cache/fuzz/corpus/archive
+```
+
+The release gate still requires long runs under ASan/UBSan (see `plan/archieve/README.md` §10.2).
 
 The local CI configuration (`.github/`, not tracked) covers Linux (Clang/GCC, x64/x86),
 Windows/MSVC (x64/x86), ASan/UBSan, `MOTEVM_WERROR=ON`, and the standalone `builder`.

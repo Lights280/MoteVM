@@ -1,4 +1,4 @@
-#include "archive.hpp"
+#include "archive/archive.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -9,8 +9,8 @@
 #include <utility>
 #include <vector>
 
-#include "name.hpp"
-#include "util.hpp"
+#include "archive/name.hpp"
+#include "archive/util.hpp"
 #include "parse.hpp"
 
 namespace

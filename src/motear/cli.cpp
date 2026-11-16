@@ -13,9 +13,9 @@
 #include <utility>
 #include <vector>
 
-#include "archive.hpp"
-#include "manifest.hpp"
-#include "util.hpp"
+#include "archive/archive.hpp"
+#include "archive/manifest.hpp"
+#include "archive/util.hpp"
 #include "writer.hpp"
 #include "common/cli.hpp"
 #include "common/io.hpp"

@@ -25,11 +25,11 @@ MoteVM 由四个命令行工具和一个独立构建驱动组成：
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/include/` | 共享代码：`motevm_core`（模块加载/校验/反汇编）、`motevm_tools`（汇编器与工具基础设施） |
+| `src/include/` | 共享代码：`motevm_core`（模块加载/校验/反汇编、MTR 读取器）、`motevm_tools`（汇编器与工具基础设施） |
 | `src/motevm/` | 虚拟机运行时、内存管理、宿主接口与调试器 |
 | `src/moteasm/` | 汇编器：`.mta` 源文件 -> `.mbc` |
 | `src/motedis/` | 反汇编器：`.mbc` -> 规范化 `.mta` 文本 |
-| `src/motear/` | 归档工具：打包、查看、校验、解包 `.mtr`；MTR 容器实现（模块私有） |
+| `src/motear/` | 归档工具：打包、查看、校验、解包 `.mtr`；MTR 写入器（模块私有） |
 | `src/builder/` | 独立构建驱动，可在 CMake 之外单独构建整个项目 |
 | `tests/` | 本地测试套件（CTest，不入库）：解析、验证器、往返、归档、运行时、CLI；本工作区在 `deepseek-cache/tests/` |
 | `docs/` | 用户文档：快速开始、ISA、字节码/归档格式、工具链、构建与限制 |
@@ -106,6 +106,7 @@ motevm hello.mbc                              # 运行；-s 统计，-d 调试�
 # 输出：hello, mote
 motedis hello.mbc                             # 反汇编为规范文本
 motear pack -o hello.mtr --module hello.mbc   # 打包
+motevm hello.mtr                              # 直接运行归档入口
 motear list hello.mtr --verify                # 查看并校验归档
 ```
 
@@ -114,7 +115,7 @@ motear list hello.mtr --verify                # 查看并校验归档
 
 ### `motevm` 常用选项
 
-用法：`motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_parameters]`
+用法：`motevm [extern_parameters] <entry_mbc_module|entry_mtr_archive> [ext_mbc_modules] [intern_parameters]`
 
 | 选项 | 说明 |
 | --- | --- |
@@ -124,6 +125,7 @@ motear list hello.mtr --verify                # 查看并校验归档
 | `-i, --interactive` | 在入口处停下，从标准输入读取调试器命令 |
 | `--step` | 在第一条指令前停下（隐含 `--interactive`） |
 | `--break SPEC` | 设置断点（可重复）：`#index`、`offset`、`function[:offset]` |
+| `--entry NAME` | 选择 `.mtr` 归档内的入口模块（默认 manifest key 3） |
 | `--trace LVL` | 指令跟踪：`off`、`call`、`exec`、`full`（默认 `off`） |
 | `--trace-file PATH` | 跟踪输出目标（默认 stderr，`-` 表示 stdout） |
 | `--trace-limit N` | 记录 N 行跟踪后停止（0 表示不限制） |

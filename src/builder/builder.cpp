@@ -869,7 +869,9 @@ namespace BUILD
                 core.name = TARGET_CORE;
                 core.internal = true;
                 core.includes.push_back(sharedInclude);
-                for (const char *file : {"parse.cpp", "verifier.cpp", "disasm.cpp"})
+                for (const char *file : {"parse.cpp", "verifier.cpp", "disasm.cpp",
+                                         "archive/archive.cpp", "archive/manifest.cpp",
+                                         "archive/name.cpp", "archive/util.cpp"})
                 {
                     const Path source = sharedInclude / pathFromText(file);
                     if (!fileExists(source))

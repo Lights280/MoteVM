@@ -9,7 +9,7 @@ MoteVM is a self-contained register-based virtual machine and toolchain:
 | Tool | Input | Output |
 | --- | --- | --- |
 | `moteasm` | `.mta` assembly source | `.mbc` module |
-| `motevm` | `.mbc` module | program output |
+| `motevm` | `.mbc` module or `.mtr` archive | program output |
 | `motedis` | `.mbc` module | canonical `.mta` text |
 | `motear` | `.mbc`/resource files | `.mtr` archive |
 | `builder` | source tree | build products without CMake |

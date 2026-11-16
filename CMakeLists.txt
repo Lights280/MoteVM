@@ -290,15 +290,20 @@ set(MOTEVM_MODULE_NAMES "")
 
 # --- 共享库（不参与模块发现） ----------------------------------------------
 # src/include contains every translation unit shared by more than one module:
-#   motevm_core  : .mbc loader/verifier/disassembler (parse/verifier/disasm)
+#   motevm_core  : .mbc loader/verifier/disassembler and the MTR reader
+#                  (parse/verifier/disasm/archive/manifest/name/util)
 #   motevm_tools : assembler/disassembler tooling built on motevm_core
 # Both libraries expose src/include as their public include directory.
 # Code used by a single module is compiled into that module instead: the MTR
-# container sources live in src/motear and are part of the motear executable.
+# writer lives in src/motear and is part of the motear executable.
 set(MOTEVM_CORE_SOURCES
     "${MOTEVM_SRC_DIR}/include/parse.cpp"
     "${MOTEVM_SRC_DIR}/include/verifier.cpp"
-    "${MOTEVM_SRC_DIR}/include/disasm.cpp")
+    "${MOTEVM_SRC_DIR}/include/disasm.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/archive.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/manifest.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/name.cpp"
+    "${MOTEVM_SRC_DIR}/include/archive/util.cpp")
 
 add_library(motevm_core STATIC ${MOTEVM_CORE_SOURCES})
 add_library(motevm::core ALIAS motevm_core)
@@ -422,10 +427,16 @@ endif()
 if(MOTEVM_BUILD_FUZZERS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(WARNING "MoteVM: MOTEVM_BUILD_FUZZERS requires Clang; skipping")
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/CMakeLists.txt")
-        add_subdirectory(fuzz)
     else()
-        message(STATUS "MoteVM: MOTEVM_BUILD_FUZZERS=ON but fuzz/ is not present; skipping")
+        # The fuzz suite is a local working copy, like the test suite.
+        set(MOTEVM_FUZZ_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fuzz" CACHE PATH
+            "Directory containing libFuzzer targets (local working copy, not tracked)")
+        if(EXISTS "${MOTEVM_FUZZ_DIR}/CMakeLists.txt")
+            add_subdirectory("${MOTEVM_FUZZ_DIR}" "${CMAKE_BINARY_DIR}/fuzz")
+        else()
+            message(STATUS "MoteVM: MOTEVM_BUILD_FUZZERS=ON but no fuzz suite at "
+                           "'${MOTEVM_FUZZ_DIR}'; set -DMOTEVM_FUZZ_DIR=<dir> or turn the option off")
+        endif()
     endif()
 endif()
 

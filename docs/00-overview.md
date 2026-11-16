@@ -9,7 +9,7 @@ MoteVM 是一个自包含的寄存器式虚拟机与工具链：
 | 工具 | 输入 | 输出 |
 | --- | --- | --- |
 | `moteasm` | `.mta` 汇编源文件 | `.mbc` 模块 |
-| `motevm` | `.mbc` 模块 | 程序输出 |
+| `motevm` | `.mbc` 模块或 `.mtr` 归档 | 程序输出 |
 | `motedis` | `.mbc` 模块 | 规范化 `.mta` 文本 |
 | `motear` | `.mbc`/资源文件 | `.mtr` 归档 |
 | `builder` | 源码树 | 独立于 CMake 的构建产物 |

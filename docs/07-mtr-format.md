@@ -2,7 +2,7 @@
 
 [简体中文](07-mtr-format.md) | [English](en/07-mtr-format.md)
 
-> **版本说明**：MTR 格式版本为 **1.0**，本文对应 MoteVM **0.1.0** 的当前实现。仓库尚未发布带版本标签的正式发行版，因此本文属于尽力而为的参考；若本文与实现不一致，以 `src/motear/archive.cpp`、`manifest.cpp`、`name.cpp`、`util.cpp`、`writer.cpp` 为准。MTR 文件后缀为 `.mtr`。
+> **版本说明**：MTR 格式版本为 **1.0**，本文对应 MoteVM **0.1.0** 的当前实现。仓库尚未发布带版本标签的正式发行版，因此本文属于尽力而为的参考；若本文与实现不一致，以 `src/include/archive/archive.cpp`、`manifest.cpp`、`name.cpp`、`util.cpp` 与 `src/motear/writer.cpp` 为准。MTR 文件后缀为 `.mtr`。
 
 ## 1. 总览
 
@@ -107,7 +107,7 @@ TOC 不变量：
 
 ## 5. 名称规则
 
-名称是包内**逻辑相对路径**，不是宿主文件系统路径。规则实现见 `src/motear/name.cpp` 与 `src/motear/include/name.hpp`。
+名称是包内**逻辑相对路径**，不是宿主文件系统路径。规则实现见 `src/include/archive/name.cpp` 与 `src/include/archive/name.hpp`。
 
 ### 5.1 编码与字符
 
@@ -196,6 +196,16 @@ Manifest 紧跟字符串表（8 字节对齐），由若干 TLV 记录组成；�
 - 模块/资源数据内部可以包含任意字节（包括 NUL），但不得改变声明的 `dataSize`。
 
 读取器在验证模块时使用与独立 `.mbc` 文件相同的解析器和验证器；失败信息包含条目名称。
+
+### 7.1 运行时语义（`motevm`）
+
+`motevm` 可以直接把 `.mtr` 作为入口：
+
+- 归档先做容器级校验，随后每个 module 条目交给 MOTEBC 解析器/验证器；任一模块失败则整包不执行（fail-closed）。
+- 入口模块选择：`--entry NAME` 优先；否则 manifest key 3；否则包内必须恰好有一个 module。
+- 入口模块最先装载并执行；其余 module 只装载（并绑定 import），不执行。`.mtr` 不能与命令行上的外部 `.mbc` 混用。
+- 仅当入口是 `.mtr` 时注册只读宿主函数 `asset.has` / `asset.size` / `asset.read`；它们按精确名称访问且只暴露 `kind = resource` 条目，模块字节与 manifest 不可读。松散 `.mbc` 中 import 这些名字会在加载期得到 `UNLINKED_IMPORT`（ADR-033）。
+- 宿主函数 ABI、错误码与能力门控见 [self/cli.md](self/cli.md) §10。
 
 ## 8. CRC-32C
 

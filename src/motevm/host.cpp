@@ -20,6 +20,26 @@ int Host::load(const std::string &path, const std::string &displayPath)
         hostStats.result = result;
         return result;
     }
+    return install(std::move(parser), displayPath);
+}
+
+int Host::loadBytes(std::span<const byte> bytes, const std::string &displayPath)
+{
+    Parse parser;
+    int result = parser.load(bytes);
+    if (result == PARSE::OK)
+        result = parser.parse();
+    if (result != PARSE::OK)
+    {
+        lastError = result;
+        hostStats.result = result;
+        return result;
+    }
+    return install(std::move(parser), displayPath);
+}
+
+int Host::install(Parse parser, const std::string &displayPath)
+{
     std::vector<CORE::HostSlot> slots;
     const int bound = bindImports(parser, slots);
     if (bound != HOST::OK)

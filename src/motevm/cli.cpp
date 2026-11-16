@@ -1,5 +1,7 @@
 #include "cli.hpp"
 
+#include "archive/archive.hpp"
+#include "archive/util.hpp"
 #include "core.hpp"
 #include "debug.hpp"
 #include "define.hpp"
@@ -38,9 +40,8 @@ namespace
         STAGE_RUN = 3
     };
 
-    bool isModulePath(const std::string &value)
+    bool hasSuffix(const std::string &value, std::string_view suffix)
     {
-        const std::string suffix = ".mbc";
         if (value.size() <= suffix.size())
             return false;
         for (std::size_t i = 0; i < suffix.size(); ++i)
@@ -52,6 +53,16 @@ namespace
                 return false;
         }
         return true;
+    }
+
+    bool isModulePath(const std::string &value)
+    {
+        return hasSuffix(value, ".mbc");
+    }
+
+    bool isArchivePath(const std::string &value)
+    {
+        return hasSuffix(value, ".mtr");
     }
 
     const char *sectionName(dword id)
@@ -103,6 +114,7 @@ namespace
     {
         Host *host = nullptr;
         Workspace *workspace = nullptr;
+        const ARCHIVE::Archive *archive = nullptr; // set only when running a .mtr
         std::ostream *out = nullptr;
         std::ostream *err = nullptr;
         dword module = 0;     // module inspected by const_addr/const_len
@@ -510,6 +522,72 @@ namespace
         }
     }
 
+    // ---------------------------------------------------------------------
+    // asset.* (registered only when the entry is a .mtr, ADR-033)
+    // ---------------------------------------------------------------------
+
+    bool assetName(HostState &state, const dword *args, std::string &name)
+    {
+        if (args[1] == 0 || args[1] > ARCHIVE::MAX_NAME_BYTES)
+            return false;
+        return memoryRead(state, args[0], args[1], name);
+    }
+
+    dword assetHasFunction(void *user, const dword *args, int arity)
+    {
+        HostState *state = static_cast<HostState *>(user);
+        if (state == nullptr || state->archive == nullptr || args == nullptr || arity != 2)
+            return hostError(HOST_BAD_ARGUMENT);
+        std::string name;
+        if (!assetName(*state, args, name))
+            return hostError(HOST_BAD_ARGUMENT);
+        const ARCHIVE::Entry *entry = state->archive->find(name);
+        return entry != nullptr && entry->kind == ARCHIVE::EntryKind::resource ? 1u : 0u;
+    }
+
+    dword assetSizeFunction(void *user, const dword *args, int arity)
+    {
+        HostState *state = static_cast<HostState *>(user);
+        if (state == nullptr || state->archive == nullptr || args == nullptr || arity != 2)
+            return hostError(HOST_BAD_ARGUMENT);
+        std::string name;
+        if (!assetName(*state, args, name))
+            return hostError(HOST_BAD_ARGUMENT);
+        const ARCHIVE::Entry *entry = state->archive->find(name);
+        if (entry == nullptr || entry->kind != ARCHIVE::EntryKind::resource)
+            return hostError(HOST_DENIED);
+        return static_cast<dword>(entry->size); // parse() caps entries at 64 MiB
+    }
+
+    dword assetReadFunction(void *user, const dword *args, int arity)
+    {
+        HostState *state = static_cast<HostState *>(user);
+        if (state == nullptr || state->archive == nullptr || args == nullptr || arity != 4)
+            return hostError(HOST_BAD_ARGUMENT);
+        if (args[3] > MAX_HOST_IO_BYTES)
+            return hostError(HOST_BAD_ARGUMENT);
+        try
+        {
+            std::string name;
+            if (!assetName(*state, args, name))
+                return hostError(HOST_BAD_ARGUMENT);
+            const ARCHIVE::Entry *entry = state->archive->find(name);
+            if (entry == nullptr || entry->kind != ARCHIVE::EntryKind::resource)
+                return hostError(HOST_DENIED);
+            const qword count = entry->size < args[3] ? entry->size : args[3];
+            if (count != 0 &&
+                !memoryWrite(*state, args[2],
+                             std::string_view(reinterpret_cast<const char *>(entry->data.data()),
+                                              static_cast<std::size_t>(count))))
+                return hostError(HOST_BAD_ARGUMENT);
+            return static_cast<dword>(count);
+        }
+        catch (...)
+        {
+            return hostError(HOST_SYSTEM_ERROR);
+        }
+    }
+
     struct Registration
     {
         const char *name;
@@ -538,6 +616,14 @@ namespace
         {"file.exists", 2, &fileExistsFunction},
         {"file.size", 2, &fileSizeFunction},
         {"file.remove", 2, &fileRemoveFunction},
+    };
+
+    // Capability-gated: only registered when the entry is a .mtr, so a loose
+    // .mbc that imports asset.* fails to load (UNLINKED_IMPORT, ADR-033).
+    constexpr Registration ASSET_FUNCTIONS[] = {
+        {"asset.has", 2, &assetHasFunction},
+        {"asset.size", 2, &assetSizeFunction},
+        {"asset.read", 4, &assetReadFunction},
     };
 
     template <std::size_t N>
@@ -986,6 +1072,11 @@ int CLI::parse(int argc, char *argv[], Options &options)
                 return USAGE;
             options.breakpoints.emplace_back(std::move(value));
         }
+        else if (TOOL::matchesOption(arg, "--entry"))
+        {
+            if (!TOOL::optionValue(arg, "--entry", argc, argv, index, options.entryName))
+                return USAGE;
+        }
         else if (arg == "-w" || TOOL::matchesOption(arg, "--workspace"))
         {
             std::string value;
@@ -1006,6 +1097,8 @@ int CLI::parse(int argc, char *argv[], Options &options)
     if (index >= argc)
         return USAGE;
     options.entry = argv[index++];
+    if (!options.entryName.empty() && !isArchivePath(options.entry))
+        return USAGE;
 
     // 3) external modules: tokens ending with .mbc
     while (index < argc && isModulePath(argv[index]))
@@ -1026,8 +1119,8 @@ void CLI::printVersion(std::ostream &out)
 void CLI::printUsage(std::ostream &out)
 {
     TOOL::printUsageHeader(out, "motevm", "MOTEBC", MOTEBC_VERSION);
-    out << "  motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] "
-           "[intern_parameters]\n\n";
+    out << "  motevm [extern_parameters] <entry_mbc_module|entry_mtr_archive> "
+           "[ext_mbc_modules] [intern_parameters]\n\n";
     out << "extern_parameters:\n";
     out << "  -v, --version    print version and exit\n";
     out << "  -h, --help       print this help and exit\n";
@@ -1037,6 +1130,7 @@ void CLI::printUsage(std::ostream &out)
     out << "  -i, --interactive  stop at entry and read debugger commands from stdin\n";
     out << "      --step       stop before the first instruction (implies --interactive)\n";
     out << "      --break SPEC set a breakpoint (repeatable): #index, offset, function[:offset]\n";
+    out << "      --entry NAME select the module entry inside a .mtr archive\n";
     out << "      --trace LVL  instruction trace: off|call|exec|full (default: off)\n";
     out << "      --trace-file PATH  trace target (default: stderr, '-' = stdout)\n";
     out << "      --trace-limit N    stop recording after N trace lines (0 = unlimited)\n";
@@ -1045,6 +1139,8 @@ void CLI::printUsage(std::ostream &out)
     out << "notes:\n";
     out << "  - extern parameters must appear before the entry module\n";
     out << "  - external modules are tokens ending with .mbc; the rest are intern parameters\n";
+    out << "  - a .mtr entry archive cannot be combined with external .mbc modules\n";
+    out << "  - inside a .mtr entry module, asset.has/size/read expose package resources\n";
     out << "  - intern parameters are reserved for scripts and currently ignored\n";
     out << "  - with -w, relative module paths resolve inside DIR and absolute paths must stay inside\n";
     out << "  - without -w no directory is granted: modules load as given, scripts get stdio only\n";
@@ -1109,27 +1205,120 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
         return 4;
     }
 
-    for (const std::string &file : files)
+    // A .mtr entry archive replaces the file list: the archive is validated once,
+    // then its module entries are loaded through the same Parse/bindImports path.
+    std::unique_ptr<ARCHIVE::Archive> archive;
+    if (isArchivePath(options.entry))
     {
-        std::filesystem::path resolved(file);
+        if (!options.modules.empty())
+        {
+            err << "error: '" << options.entry
+                << "': a .mtr entry cannot be combined with external .mbc modules\n";
+            return USAGE;
+        }
+
+        std::filesystem::path resolved(options.entry);
         if (workspace.hasRoot())
         {
-            workspaceCode = workspace.resolveRead(file, resolved);
+            workspaceCode = workspace.resolveRead(options.entry, resolved);
             if (workspaceCode != WORKSPACE::OK)
             {
-                workspaceDenied = true;
-                failedAt = STAGE_LOAD;
-                failedFile = file;
-                failure = workspaceCode; // non-zero => exitCodeOf(STAGE_LOAD) == 2
-                break;
+                err << "error: '" << options.entry << "': "
+                    << workspaceErrorText(workspaceCode) << "\n";
+                return 2;
             }
         }
-        failure = host.load(resolved.string(), file);
+
+        archive = std::make_unique<ARCHIVE::Archive>();
+        int code = archive->load(resolved.string());
+        if (code == ARCHIVE::OK)
+            code = archive->parse(false); // Host::loadBytes verifies each module once
+        if (code != ARCHIVE::OK)
+        {
+            err << "error: '" << options.entry << "': " << ARCHIVE::errorText(code);
+            if (!archive->detail().empty())
+                err << ": " << archive->detail();
+            err << "\n";
+            return 2;
+        }
+
+        std::string entryName;
+        std::string entryError;
+        bool selected = false;
+        if (!options.entryName.empty())
+        {
+            const ARCHIVE::Entry *candidate = archive->find(options.entryName);
+            selected = candidate != nullptr &&
+                       candidate->kind == ARCHIVE::EntryKind::module;
+            if (selected)
+                entryName = options.entryName;
+            else
+                entryError = "no module entry named '" + options.entryName + "'";
+        }
+        else
+            selected = archive->resolveEntry(entryName, entryError);
+        if (!selected)
+        {
+            err << "error: '" << options.entry << "': " << entryError << "\n";
+            return 2;
+        }
+
+        hostState.archive = archive.get();
+        if (!registerFunctions(host, &hostState, ASSET_FUNCTIONS))
+        {
+            err << "internal error: cannot register the 'asset.*' host functions\n";
+            return 4;
+        }
+
+        // Entry module first so Host::module(0) and the debugger still point at it;
+        // the remaining modules follow in archive (name) order.
+        const std::string prefix =
+            std::filesystem::path(options.entry).filename().string() + "!";
+        const ARCHIVE::Entry *entryModule = archive->find(entryName);
+        failure = host.loadBytes(entryModule->data, prefix + entryName);
         if (failure != HOST::OK)
         {
             failedAt = STAGE_LOAD;
-            failedFile = file;
-            break;
+            failedFile = prefix + entryName;
+        }
+        for (std::size_t i = 0; failure == HOST::OK && i < archive->entries().size(); ++i)
+        {
+            const ARCHIVE::Entry &candidate = archive->entries()[i];
+            if (candidate.kind != ARCHIVE::EntryKind::module ||
+                candidate.name == entryName)
+                continue;
+            failure = host.loadBytes(candidate.data, prefix + candidate.name);
+            if (failure != HOST::OK)
+            {
+                failedAt = STAGE_LOAD;
+                failedFile = prefix + candidate.name;
+            }
+        }
+    }
+    else
+    {
+        for (const std::string &file : files)
+        {
+            std::filesystem::path resolved(file);
+            if (workspace.hasRoot())
+            {
+                workspaceCode = workspace.resolveRead(file, resolved);
+                if (workspaceCode != WORKSPACE::OK)
+                {
+                    workspaceDenied = true;
+                    failedAt = STAGE_LOAD;
+                    failedFile = file;
+                    failure = workspaceCode; // non-zero => exitCodeOf(STAGE_LOAD) == 2
+                    break;
+                }
+            }
+            failure = host.load(resolved.string(), file);
+            if (failure != HOST::OK)
+            {
+                failedAt = STAGE_LOAD;
+                failedFile = file;
+                break;
+            }
         }
     }
 

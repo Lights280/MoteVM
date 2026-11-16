@@ -2,7 +2,7 @@
 
 [简体中文](../07-mtr-format.md) | [English](07-mtr-format.md)
 
-> **Version note**: The MTR format version is **1.0**, and this document corresponds to the current implementation of MoteVM **0.1.0**. The repository does not yet publish a tagged release, so this document is a best-effort reference; if it disagrees with the implementation, `src/motear/archive.cpp`, `manifest.cpp`, `name.cpp`, `util.cpp`, and `writer.cpp` are authoritative. MTR files use the `.mtr` suffix.
+> **Version note**: The MTR format version is **1.0**, and this document corresponds to the current implementation of MoteVM **0.1.0**. The repository does not yet publish a tagged release, so this document is a best-effort reference; if it disagrees with the implementation, `src/include/archive/archive.cpp`, `manifest.cpp`, `name.cpp`, `util.cpp`, and `src/motear/writer.cpp` are authoritative. MTR files use the `.mtr` suffix.
 
 ## 1. Overview
 
@@ -107,7 +107,7 @@ Only zero padding (at most 7 bytes) is allowed between the end of the string tab
 
 ## 5. Name rules
 
-Names are logical **relative paths** inside the package, not host filesystem paths. The rules are implemented in `src/motear/name.cpp` and `src/motear/include/name.hpp`.
+Names are logical **relative paths** inside the package, not host filesystem paths. The rules are implemented in `src/include/archive/name.cpp` and `src/include/archive/name.hpp`.
 
 ### 5.1 Encoding and characters
 
@@ -196,6 +196,16 @@ Rules:
 - Module/resource data may contain any bytes (including NUL) but must not change the declared `dataSize`.
 
 When validating a module, the reader uses the same parser and verifier as for a standalone `.mbc` file; failure messages include the entry name.
+
+### 7.1 Runtime semantics (`motevm`)
+
+`motevm` accepts a `.mtr` file directly as the entry:
+
+- The archive is validated as a container first, then every module entry goes through the MOTEBC parser/verifier; any failure rejects the whole package without executing anything (fail-closed).
+- Entry selection: `--entry NAME` first, then manifest key 3, otherwise the package must contain exactly one module.
+- The entry module is loaded and executed first; the other modules are only loaded (and their imports bound), not executed. A `.mtr` cannot be combined with external `.mbc` modules on the command line.
+- Only when the entry is a `.mtr` are the read-only host functions `asset.has` / `asset.size` / `asset.read` registered. They match exact names and expose only `kind = resource` entries; module bytes and the manifest are unreadable. A loose `.mbc` that imports these names fails at load time with `UNLINKED_IMPORT` (ADR-033).
+- Host ABI, error codes and capability gating are in [self/cli.md](self/cli.md) §10.
 
 ## 8. CRC-32C
 

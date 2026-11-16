@@ -36,7 +36,7 @@ cmake --build build
 | `MOTEVM_BUILD_TOOLS` | `ON` | `ON`、`OFF` | 构建 `src/` 下自动发现的模块可执行文件。`OFF` 时仍会构建三个静态库，但不生成工具可执行文件。 |
 | `MOTEVM_BUILD_TESTS` | `ON` | `ON`、`OFF` | 构建测试套件。目录由 `MOTEVM_TEST_DIR` 指定（默认 `tests/`）；仅当该目录下存在 `CMakeLists.txt` 时调用 `add_subdirectory` 并启用 CTest，否则打印状态消息并跳过（此时 `ctest` 无用例）。 |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF` | `ON`、`OFF` | 构建 `benchmarks/`。仅当 `benchmarks/CMakeLists.txt` 存在时加入；否则打印状态消息并跳过。 |
-| `MOTEVM_BUILD_FUZZERS` | `OFF` | `ON`、`OFF` | 构建 libFuzzer 目标，仅支持 Clang。非 Clang 编译器下给出警告并跳过；`fuzz/CMakeLists.txt` 不存在时打印状态消息并跳过。 |
+| `MOTEVM_BUILD_FUZZERS` | `OFF` | `ON`、`OFF` | 构建 libFuzzer 目标，仅支持 Clang。非 Clang 编译器下给出警告并跳过；目录由 `MOTEVM_FUZZ_DIR` 指定（默认 `fuzz/`），不存在时打印状态消息并跳过。 |
 | `MOTEVM_WERROR` | `OFF` | `ON`、`OFF` | 把警告视为错误：MSVC 追加 `/WX`，GCC/Clang 追加 `-Werror`。 |
 | `MOTEVM_SANITIZERS` | `OFF` | `ON`、`OFF` | 启用 ASan/UBSan。GCC/Clang 使用 `-fsanitize=address,undefined`，MSVC 仅启用 ASan。 |
 | `MOTEVM_INSTALL` | `OFF` | `ON`、`OFF` | 生成安装规则。见 §2.6。 |
@@ -53,10 +53,10 @@ cmake --build build
 
 | 目标 | 类型 | 源文件 | 依赖 |
 | --- | --- | --- | --- |
-| `motevm_core`（别名 `motevm::core`） | STATIC | `src/include/parse.cpp`、`verifier.cpp`、`disasm.cpp` | 无 |
+| `motevm_core`（别名 `motevm::core`） | STATIC | `src/include/parse.cpp`、`verifier.cpp`、`disasm.cpp`、`archive/*.cpp` | 无 |
 | `motevm_tools` | STATIC | `src/include/asm/*.cpp`、`common/*.cpp`、`dis/*.cpp` | PUBLIC `motevm_core` |
 
-两个库都以 `src/include` 作为 PUBLIC include 目录，并要求 C++20。只被单个模块使用的代码留在该模块内：MTR 容器源文件位于 `src/motear/`，头文件在 `src/motear/include/`，直接编译进 `motear` 可执行文件。
+两个库都以 `src/include` 作为 PUBLIC include 目录，并要求 C++20。MTR 读取器位于 `src/include/archive/`（`motear` 与 `motevm` 共用）；只被 `motear` 使用的写入器留在 `src/motear/`（头文件在 `src/motear/include/`），直接编译进 `motear` 可执行文件。
 
 可执行目标由目录自动发现：`src/` 的每个直接子目录（`include` 除外）都是一个模块，模块目录名必须匹配 `[a-z][a-z0-9_]*`，且必须包含 `<module>.cpp` 作为入口。模块内的 `*.cpp` 递归收集，但 `include/` 下的文件被排除。
 
@@ -249,7 +249,21 @@ ctest --test-dir build --output-on-failure
 | --- | --- | --- |
 | `MOTEVM_BUILD_TESTS=ON` | 是 | 构建 `MOTEVM_TEST_DIR`（默认 `tests/`）、调用 `enable_testing()` 并注册 `unit` / `cli` 两个 CTest 用例；目录不存在时跳过 |
 | `MOTEVM_BUILD_BENCHMARKS=ON` | 否 | `benchmarks/CMakeLists.txt` 存在时加入；否则打印状态消息并跳过 |
-| `MOTEVM_BUILD_FUZZERS=ON` | 否 | Clang 下加入 `fuzz/`；非 Clang 下先打印警告 |
+| `MOTEVM_BUILD_FUZZERS=ON` | 否 | Clang 下加入 `MOTEVM_FUZZ_DIR`（默认 `fuzz/`）；非 Clang 下先打印警告 |
+
+模糊测试目标是 `fuzz_parse`（MOTEBC 解析器/验证器）与 `fuzz_archive`（MTR 读取器，并验证包内每个
+module）。harness 在变异后重算容器 CRC，模拟“攻击者可提供合法校验和”，否则随机变异会止步于
+`BAD_CHECKSUM`。构建 fuzz 时应同时打开 `MOTEVM_SANITIZERS=ON`，让 `motevm_core` 也被插桩：
+
+```bash
+cmake -S . -B build-fuzz -G Ninja -DMOTEVM_COMPILER=clang -DMOTEVM_SANITIZERS=ON \
+      -DMOTEVM_BUILD_FUZZERS=ON -DMOTEVM_FUZZ_DIR=$PWD/deepseek-cache/fuzz
+cmake --build build-fuzz
+build-fuzz/bin/fuzz_parse   deepseek-cache/fuzz/corpus/parse
+build-fuzz/bin/fuzz_archive deepseek-cache/fuzz/corpus/archive
+```
+
+发布门禁仍要求 ASan/UBSan 下长时间运行（见 `plan/archieve/README.md` §10.2）。
 
 本地 CI 配置（`.github/`，未入库）覆盖 Linux（Clang/GCC，x64/x86）、Windows/MSVC（x64/x86）、
 ASan/UBSan、`MOTEVM_WERROR=ON` 与独立 `builder` 构建。

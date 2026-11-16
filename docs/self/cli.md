@@ -8,18 +8,19 @@
 ## 1. 语法
 
 ```text
-motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_parameters]
+motevm [extern_parameters] <entry_mbc_module|entry_mtr_archive> [ext_mbc_modules] [intern_parameters]
 ```
 
 | 段 | 位置 | 含义 |
 |---|---|---|
 | `extern_parameters` | 入口模块之前 | 宿主级选项，见 §2 |
-| `<entry_mbc_module>` | 第一个非选项 token | 唯一被执行的入口模块 |
+| `<entry_mbc_module\|entry_mtr_archive>` | 第一个非选项 token | 唯一被执行的入口；以 `.mtr` 结尾时按归档装载 |
 | `[ext_mbc_modules]` | 入口之后连续以 `.mbc` 结尾的 token | 外部模块：加载并写入常量池，**不执行** |
 | `[intern_parameters]` | 其余 token | 预留给脚本，当前解析后忽略 |
 
 - `.mbc` 后缀大小写不敏感；长度必须大于 4（单独的 `.mbc` 不算模块 token）。
 - 入口模块本身不要求以 `.mbc` 结尾。
+- 入口以 `.mtr` 结尾（大小写不敏感）时按 MTR 归档处理：见 §2 的 `--entry` 与 §4 的流水线。
 - 选项只在外段解析；入口之后的 `-` 开头 token 属于 intern 参数，不会被当作选项。
 - `--` 结束 extern 段；其后的第一个 token 即使以 `-` 开头也作为入口模块。
 
@@ -35,6 +36,7 @@ motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_paramete
 | `-i`, `--interactive` | 在入口第一条指令前暂停并进入 REPL |
 | `--step` | 在第一条指令前暂停（隐含 `--interactive`） |
 | `--break SPEC` | 设置断点，可重复；语法见 §11.1 |
+| `--entry NAME` | 仅用于 `.mtr` 入口：按包内名称选择入口 module；省略时用 manifest key 3，否则要求包内只有一个 module |
 | `--trace LVL` | 指令 trace：`off`（默认）/`call`/`exec`/`full` |
 | `--trace-file PATH` | trace 目标；缺省 stderr，`-` = stdout；给出 `-w` 时路径必须落在工作区内 |
 | `--trace-limit N` | 最多记录 N 行（0 = 不限） |
@@ -48,6 +50,7 @@ motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_paramete
 - 长选项支持 `--name=value`；`-w` 取下一个 token 原样作为值（允许以 `-` 开头）。
 - `--break`/`--trace-file` 缺值或空值、`--trace`/`--trace-limit` 非法值、`--workspace=`
   空值 ⇒ 用法错误（exit 1），用法文本写 stderr、stdout 无输出。
+- `--entry` 只允许与 `.mtr` 入口一起使用；`.mtr` 入口不允许再跟外部 `.mbc`（均 exit 1）。
 - 未知选项、缺少入口模块 ⇒ 用法错误（exit 1）。
 
 ### 2.1 工作区
@@ -94,6 +97,9 @@ workspace check (-w)            root unavailable -> exit 2; default -> stdio onl
 register built-in host funcs    print/print_str/...; add file.* when -w is given
 Host::load(entry + ext modules) path outside -> exit 2 ("outside workspace")
                                 failure -> exit 2 (PARSE 1..7; HOST 102 = unlinked import)
+.mtr entry                      Archive::parse first (exit 2 on ARCHIVE 1..12),
+                                then Host::loadBytes per module (same PARSE/HOST codes);
+                                asset.* registered before the first load
 Host::initMemory()              failure -> exit 4
 Host::runModule(0)              runs the entry module only; installs debug hooks as requested
                                 DEBUG_STOP + quit -> exit 0; abort -> exit 3
@@ -104,6 +110,8 @@ Host::runModule(0)              runs the entry module only; installs debug hooks
 - 外部模块只贡献常量池（写入 `Memory`），不会执行，也不能被入口模块 `call`
   （`Core::call` 只在单模块 FUNCS 内解析）。
 - 未注册的 import 在**加载期**失败（`HOST::UNLINKED_IMPORT` ⇒ exit 2）。
+- `.mtr` 入口先选择入口模块（`--entry` → manifest key 3 → 唯一 module），入口最先装载；
+  其余 module 按包内名称顺序装载但不执行。归档内的资源不受 `-w` 限制，也不能借此访问文件系统。
 - `-d` 的模块摘要只在加载与内存初始化都成功后输出；`--status` 在加载失败时只包含已加载模块。
 
 ## 5. 退出码
@@ -257,6 +265,7 @@ error: trap 3 (TRAP) at pc=8
 - `next` 只在当前指令是 `call` 时步过，否则等价于 `step 1`。
 - trace/REPL 每条指令调用一次调试钩子，性能显著低于正常执行。
 - 脚本文件能力只有 `-w` 下的 `file.*`；没有 `io.open`、目录遍历或标准流句柄 API。
+- 归档资源能力只有运行 `.mtr` 时的只读 `asset.*`；没有枚举、大小写折叠或路径解析。
 - 未给出 `-w` 时仍可按任意路径加载命令行显式给出的模块文件——这是 CLI 输入，不是脚本能力。
 - 只支持单个工作区根。
 - 没有 `--fuel`/`--max-*` 选项；`Core::setFuel` 未在 CLI 暴露。
@@ -311,13 +320,26 @@ error: trap 3 (TRAP) at pc=8
 - 路径字节按平台窄字符解释，必须为 1..4096 字节且不含 NUL。
 - 单次读写上限 16 MiB；文件一律二进制打开，不做换行转换。
 
-### 10.3 错误码
+### 10.3 仅在入口是 `.mtr` 时注册（`asset.*`）
+
+| 名字 | arity | 参数 → 返回 | 说明 |
+|---|---|---|---|
+| `asset.has` | 2 | `(nameAddr, nameLen)` → `1`/`0` / 负码 | 精确名称的 resource 条目是否存在 |
+| `asset.size` | 2 | `(nameAddr, nameLen)` → `n` / 负码 | 资源字节数；不存在 ⇒ `-4` |
+| `asset.read` | 4 | `(nameAddr, nameLen, bufAddr, maxLen)` → `n` / 负码 | 最多复制 `maxLen` 字节，返回实际字节数；目标范围非法 ⇒ `-5` |
+
+- 只暴露 `kind = resource` 条目；模块字节与 manifest 不可读（ADR-033）。
+- 名称按字节精确匹配，长度 1..1024；不做大小写折叠、不做路径解析。
+- `maxLen > 16 MiB` ⇒ `-5`；零长度资源返回 `0`。
+- 松散 `.mbc` 中 import 这些名字会在加载期失败（`UNLINKED_IMPORT`）。
+
+### 10.4 错误码
 
 | 值 | 含义 |
 |---|---|
 | `0` | 成功 |
 | `-3` | 系统 I/O 失败（打开/读/写/删除失败、父目录不存在、目标不是普通文件） |
-| `-4` | 未授权（路径越界 / 没有工作区） |
+| `-4` | 未授权（路径越界 / 没有工作区 / 归档资源不存在） |
 | `-5` | 参数非法（路径长度 0 或 >4096、含 NUL、缓冲区越界、单次 I/O >16 MiB；适用函数的 arity 不符） |
 | `0xFFFFFFFF` | 查询类失败（`const_addr`/`const_len`/`mem_alloc`） |
 

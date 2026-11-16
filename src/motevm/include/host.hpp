@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,8 @@ private:
 private:
     int ensureBlocks(qword offset, qword size);
     int bindImports(const Parse &module, std::vector<CORE::HostSlot> &slots);
+    // Shared tail of load()/loadBytes(): bind imports and adopt the parsed image.
+    int install(Parse parser, const std::string &displayPath);
 
 public:
     Host() = default;
@@ -79,6 +82,8 @@ public:
     // Loads from 'path' but reports 'displayPath' in --status/--debug output, so a
     // workspace-resolved absolute path never leaks into diagnostics (docs/self/cli.md §6).
     int load(const std::string &path, const std::string &displayPath);
+    // Loads an in-memory module (an MTR module entry); imports bind as in load().
+    int loadBytes(std::span<const byte> bytes, const std::string &displayPath);
     int load(const std::vector<std::string> &paths);
     int initMemory(void);
     // Guard configuration forwarded to the Core created by each run (ADR-020).

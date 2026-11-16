@@ -11,6 +11,7 @@ This document describes the runtime that actually exists in `src/motevm`:
 | Component | Files | Responsibility |
 |---|---|---|
 | `Parse` | `src/include/parse.*` | Reads and validates the `.mbc` container; owns the module byte buffer |
+| `ARCHIVE::Archive` | `src/include/archive/*` | Reads and validates `.mtr` archives; provides read-only module byte views to `Host::loadBytes` |
 | `PARSE::Verifier` | `src/include/verifier.*` | Validates the instruction stream, control-flow targets and FUNCS/CODE cross tables |
 | `Host` | `src/motevm/host.*` | Module registry, import binding, constant seeding, run orchestration |
 | `Core` | `src/motevm/core.*` | One execution: frames, pc, instructions, fuel and hooks |
@@ -21,7 +22,7 @@ This document describes the runtime that actually exists in `src/motevm`:
 Linkage facts:
 
 - The runtime sources have no separate library target; they are compiled into the `motevm` executable.
-- `motevm_core` is a static library containing `Parse`, `Verifier` and `Disasm` (sources in `src/include`).
+- `motevm_core` is a static library containing `Parse`, `Verifier`, `Disasm` and the MTR reader `ARCHIVE::Archive` (sources in `src/include`).
 - `motevm_tools` is a static library containing the assembler/disassembler toolchain built on `motevm_core`.
 - There is no public umbrella header; use the concrete headers directly (see [04 · Embedding API](04-embedding-api.md)).
 
@@ -72,6 +73,7 @@ Rules:
 - All `load()` calls must complete before `runModule()`, and `initMemory()` must be called first. Every `initMemory()` creates a new `Memory` and seeds it from scratch; it does not seed constants for modules loaded later.
 - `Parse::parse()` runs `PARSE::Verifier` internally; therefore every module `Host` hands to `Core` is verified. Callers that use `Core` directly are responsible for this themselves (see §4.2).
 - `Host::run()` runs the entry of every loaded module in load order. The CLI runs only the entry module, so it uses `runModule(0)`.
+- `Host::loadBytes(span, displayName)` takes the same `Parse`/`bindImports` path as `load(path)`, with the module bytes coming from memory; a `.mtr` entry uses it to load module entries from the archive.
 
 ### 2.2 Host and Core relationship
 

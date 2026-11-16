@@ -25,6 +25,7 @@ namespace CLI
         std::vector<std::string> breakpoints; // --break, repeatable
         std::string workspace;            // -w / --workspace DIR (empty: stdio only)
         std::string entry;                // entry module (first non-option token)
+        std::string entryName;            // --entry NAME (module entry inside a .mtr)
         std::vector<std::string> modules; // external modules (tokens ending with .mbc)
         std::vector<std::string> intern;  // intern parameters (reserved, currently ignored)
 
