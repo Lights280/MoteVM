@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "define.hpp"
-#include "archive/archive.hpp"
+#include "archive.hpp"
 
 namespace ARCHIVE
 {

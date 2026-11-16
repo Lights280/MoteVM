@@ -2,7 +2,7 @@
 
 [简体中文](07-mtr-format.md) | [English](en/07-mtr-format.md)
 
-> **版本说明**：MTR 格式版本为 **1.0**，本文对应 MoteVM **0.1.0** 的当前实现。仓库尚未发布带版本标签的正式发行版，因此本文属于尽力而为的参考；若本文与实现不一致，以 `src/include/archive/archive.cpp`、`writer.cpp`、`manifest.cpp`、`name.cpp`、`util.cpp` 为准。MTR 文件后缀为 `.mtr`。
+> **版本说明**：MTR 格式版本为 **1.0**，本文对应 MoteVM **0.1.0** 的当前实现。仓库尚未发布带版本标签的正式发行版，因此本文属于尽力而为的参考；若本文与实现不一致，以 `src/motear/archive.cpp`、`manifest.cpp`、`name.cpp`、`util.cpp`、`writer.cpp` 为准。MTR 文件后缀为 `.mtr`。
 
 ## 1. 总览
 
@@ -107,7 +107,7 @@ TOC 不变量：
 
 ## 5. 名称规则
 
-名称是包内**逻辑相对路径**，不是宿主文件系统路径。规则实现见 `src/include/archive/name.hpp` 与 `name.cpp`。
+名称是包内**逻辑相对路径**，不是宿主文件系统路径。规则实现见 `src/motear/name.cpp` 与 `src/motear/include/name.hpp`。
 
 ### 5.1 编码与字符
 

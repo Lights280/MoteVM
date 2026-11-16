@@ -1,5 +1,5 @@
 // MoteAR — pack, inspect, verify and unpack MTR 1.0 (.mtr) archives.
-// The format logic lives in src/include/archive; this file only drives the CLI.
+// The format logic lives in src/motear; this file only drives the CLI.
 
 #include <iostream>
 

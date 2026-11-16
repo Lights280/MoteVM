@@ -1,10 +1,10 @@
-#include "archive/manifest.hpp"
+#include "manifest.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <utility>
 
-#include "archive/util.hpp"
+#include "util.hpp"
 
 namespace
 {
@@ -147,7 +147,7 @@ bool ARCHIVE::Manifest::encode(std::vector<byte> &out, std::string &error) const
             return false;
         }
 
-        const qword recordSize = align8(static_cast<qword>(4 + length));
+        const qword recordSize = align8(static_cast<qword>(length) + 4u);
         const qword nextSize = static_cast<qword>(out.size()) + recordSize;
         if (nextSize > MAX_MANIFEST_BYTES)
         {

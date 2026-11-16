@@ -7,7 +7,8 @@
 #   src/include/                -> shared code (headers + implementations)
 # Every direct child of src/ is a module (except include); builder is built too.
 # src/include is compiled into motevm_core (loader/verifier/disassembler) and
-# motevm_tools (assembler/disassembler tooling).
+# motevm_tools (assembler/disassembler tooling). Code used by a single module
+# lives inside that module (the MTR container is src/motear/archive.cpp).
 #
 # Compiler selection (default: clang++):
 #   cmake -S . -B build -G Ninja -DMOTEVM_COMPILER=clang
@@ -292,6 +293,8 @@ set(MOTEVM_MODULE_NAMES "")
 #   motevm_core  : .mbc loader/verifier/disassembler (parse/verifier/disasm)
 #   motevm_tools : assembler/disassembler tooling built on motevm_core
 # Both libraries expose src/include as their public include directory.
+# Code used by a single module is compiled into that module instead: the MTR
+# container sources live in src/motear and are part of the motear executable.
 set(MOTEVM_CORE_SOURCES
     "${MOTEVM_SRC_DIR}/include/parse.cpp"
     "${MOTEVM_SRC_DIR}/include/verifier.cpp"
@@ -304,24 +307,6 @@ target_compile_features(motevm_core PUBLIC cxx_std_20)
 motevm_apply_warnings(motevm_core)
 motevm_apply_sanitizers(motevm_core)
 motevm_apply_arch(motevm_core)
-
-# MoteAR (.mtr) container: reader/validator/writer shared by motear (and,
-# later, an optional motevm native-load integration).
-set(MOTEVM_ARCHIVE_SOURCES
-    "${MOTEVM_SRC_DIR}/include/archive/archive.cpp"
-    "${MOTEVM_SRC_DIR}/include/archive/manifest.cpp"
-    "${MOTEVM_SRC_DIR}/include/archive/name.cpp"
-    "${MOTEVM_SRC_DIR}/include/archive/util.cpp"
-    "${MOTEVM_SRC_DIR}/include/archive/writer.cpp")
-
-add_library(motevm_archive STATIC ${MOTEVM_ARCHIVE_SOURCES})
-add_library(motevm::archive ALIAS motevm_archive)
-target_link_libraries(motevm_archive PUBLIC motevm_core)
-target_include_directories(motevm_archive PUBLIC "${MOTEVM_SRC_DIR}/include")
-target_compile_features(motevm_archive PUBLIC cxx_std_20)
-motevm_apply_warnings(motevm_archive)
-motevm_apply_sanitizers(motevm_archive)
-motevm_apply_arch(motevm_archive)
 
 set(MOTEVM_TOOL_SOURCES
     "${MOTEVM_SRC_DIR}/include/asm/assembler.cpp"
@@ -395,7 +380,7 @@ if(MOTEVM_BUILD_TOOLS)
         elseif(module_name STREQUAL "moteasm" OR module_name STREQUAL "motedis")
             target_link_libraries(${module_name} PRIVATE motevm_tools)
         elseif(module_name STREQUAL "motear")
-            target_link_libraries(${module_name} PRIVATE motevm_archive motevm_tools)
+            target_link_libraries(${module_name} PRIVATE motevm_tools)
         endif()
 
         list(APPEND MOTEVM_MODULE_TARGETS ${module_name})
@@ -412,11 +397,17 @@ if(MOTEVM_BUILD_TOOLS)
 endif()
 
 if(MOTEVM_BUILD_TESTS)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+    # The suite is a local working copy, not part of the tracked tree (see
+    # docs/06-build.md §4): point this at wherever it lives, e.g.
+    # -DMOTEVM_TEST_DIR=$PWD/deepseek-cache/tests
+    set(MOTEVM_TEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests" CACHE PATH
+        "Directory containing the test suite (local working copy, not tracked)")
+    if(EXISTS "${MOTEVM_TEST_DIR}/CMakeLists.txt")
         enable_testing()
-        add_subdirectory(tests)
+        add_subdirectory("${MOTEVM_TEST_DIR}" "${CMAKE_BINARY_DIR}/tests")
     else()
-        message(STATUS "MoteVM: MOTEVM_BUILD_TESTS=ON but tests/ is not present; skipping")
+        message(STATUS "MoteVM: no test suite at '${MOTEVM_TEST_DIR}'; "
+                       "set -DMOTEVM_TEST_DIR=<dir> or -DMOTEVM_BUILD_TESTS=OFF")
     endif()
 endif()
 

@@ -25,19 +25,19 @@ MoteVM 由四个命令行工具和一个独立构建驱动组成：
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/include/` | 共享代码：`motevm_core`（模块加载/校验/反汇编）、`motevm_tools`（汇编器与工具基础设施）、`archive`（MTR 容器） |
+| `src/include/` | 共享代码：`motevm_core`（模块加载/校验/反汇编）、`motevm_tools`（汇编器与工具基础设施） |
 | `src/motevm/` | 虚拟机运行时、内存管理、宿主接口与调试器 |
 | `src/moteasm/` | 汇编器：`.mta` 源文件 -> `.mbc` |
 | `src/motedis/` | 反汇编器：`.mbc` -> 规范化 `.mta` 文本 |
-| `src/motear/` | 归档工具：打包、查看、校验、解包 `.mtr` |
+| `src/motear/` | 归档工具：打包、查看、校验、解包 `.mtr`；MTR 容器实现（模块私有） |
 | `src/builder/` | 独立构建驱动，可在 CMake 之外单独构建整个项目 |
-| `tests/` | 自包含测试套件（CTest）：解析、验证器、往返、归档、运行时、CLI |
+| `tests/` | 本地测试套件（CTest，不入库）：解析、验证器、往返、归档、运行时、CLI；本工作区在 `deepseek-cache/tests/` |
 | `docs/` | 用户文档：快速开始、ISA、字节码/归档格式、工具链、构建与限制 |
 | `CMakeLists.txt` | 根构建脚本，自动发现 `src/<module>/<module>.cpp` 为可执行目标 |
 | `LICENSE` | MIT 许可证 |
 
-> `benchmarks/`、`plan/`、`deepseek-cache/` 等是本地工作目录，不在版本库中；
-> `tests/` 与 CI 配置随版本库发布。变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+> `tests/`、`.github/`、`benchmarks/`、`fuzz/`、`plan/`、`deepseek-cache/` 都是本地工作目录，
+> 不随版本库发布；变更记录见 git 提交历史（发布 tag `motevm-0.1.0-frozen`）。
 
 ## 环境要求
 
@@ -73,7 +73,7 @@ cmake --build build --config Release
 | `MOTEVM_COMPILER` | `auto`（默认）、`clang`、`gcc`、`msvc` |
 | `MOTEVM_ARCH` | `native`（默认）、`x86`、`x64` |
 | `MOTEVM_BUILD_TOOLS` | `ON`（默认），构建 `src/` 下的所有模块 |
-| `MOTEVM_BUILD_TESTS` | `ON`（默认），构建并注册 `tests/` 的 CTest 用例 |
+| `MOTEVM_BUILD_TESTS` | `ON`（默认），构建并注册测试套件的 CTest 用例；目录由 `MOTEVM_TEST_DIR` 指定（默认 `tests/`） |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF`（默认），构建 `benchmarks/` |
 | `MOTEVM_BUILD_FUZZERS` | `OFF`（默认），构建 libFuzzer 目标（仅 Clang） |
 | `MOTEVM_WERROR` | `OFF`（默认），把警告视为错误 |
@@ -88,11 +88,12 @@ cmake --build build --config Release
 ### 测试
 
 ```bash
+cmake -S . -B build -DMOTEVM_TEST_DIR="$PWD/deepseek-cache/tests"  # 本地套件位置
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-`tests/` 包含单元测试与 CLI 集成检查（退出码、`--check-roundtrip`、归档往返、
+本地套件包含单元测试与 CLI 集成检查（退出码、`--check-roundtrip`、归档往返、
 `--warn-as-error` 等）。`MOTEVM_WERROR=ON` 与 `MOTEVM_SANITIZERS=ON` 可与测试一起使用。
 
 ## 命令行工具
@@ -126,7 +127,7 @@ motear list hello.mtr --verify                # 查看并校验归档
 | `--trace LVL` | 指令跟踪：`off`、`call`、`exec`、`full`（默认 `off`） |
 | `--trace-file PATH` | 跟踪输出目标（默认 stderr，`-` 表示 stdout） |
 | `--trace-limit N` | 记录 N 行跟踪后停止（0 表示不限制） |
-| `-w, --workspace DIR` | 仅授予 `DIR` 内的读写权限（默认只允许 stdio） |
+| `-w, --workspace DIR` | 把 `DIR` 设置为工作区，并授予 `DIR` 内的读写权限（未设置工作区则只允许读写 stdio） |
 
 内置宿主函数（`print`、`print_str`、`const_addr` 等）见
 [docs/self/cli.md](docs/self/cli.md) §10。
@@ -171,7 +172,7 @@ builder clean    # 清理 builder 产物（不会删除 CMake 文件）
 - `src/motevm/include/` 下的 C++ `Host`/`Core` 接口是内部接口：没有 umbrella
   header、不作为库安装、不承诺 ABI 稳定，详见
   [docs/04-embedding-api.md](docs/04-embedding-api.md)。
-- 变更记录见 [CHANGELOG.md](CHANGELOG.md)；发布 tag 由维护者在冻结提交上创建。
+- 变更记录见 git 提交历史；发布 tag 由维护者在冻结提交上创建（当前 `motevm-0.1.0-frozen`）。
 - 所有硬限制见 [docs/08-limits.md](docs/08-limits.md)。
 
 ## 帮助

@@ -34,7 +34,7 @@ cmake --build build
 | `MOTEVM_COMPILER` | `auto` | `auto`, `clang`, `gcc`, `msvc` | Compiler selection. With a non-Visual-Studio generator, `auto` prefers `clang++` (trying `clang++`, `clang++-20`, `clang++-19`, `clang++-18` in order); if none is found it warns and leaves the choice to CMake. `clang` searches the `clang++` family and `gcc` searches `g++` (`g++`, `g++-15`, `g++-14`); a missing compiler is a `FATAL_ERROR`. With Ninja/Makefiles, `msvc` requires `cl` in the developer environment, otherwise `FATAL_ERROR`; the Visual Studio generator chooses the compiler itself. The compiler ID is validated after configuration. |
 | `MOTEVM_ARCH` | `native` | `native`, `x86`, `x64` | Target architecture. `native` resolves to `x64` or `x86` from the host pointer width; other values force 32/64-bit. An invalid value is a `FATAL_ERROR`. |
 | `MOTEVM_BUILD_TOOLS` | `ON` | `ON`, `OFF` | Build the module executables discovered under `src/`. With `OFF` the three static libraries are still built, but no tool executables are produced. |
-| `MOTEVM_BUILD_TESTS` | `ON` | `ON`, `OFF` | Build `tests/`. `add_subdirectory(tests)` and CTest are enabled only when `tests/CMakeLists.txt` exists; a missing directory prints a status message and is skipped. |
+| `MOTEVM_BUILD_TESTS` | `ON` | `ON`, `OFF` | Build the test suite. The directory comes from `MOTEVM_TEST_DIR` (default `tests/`); `add_subdirectory` and CTest run only when it contains a `CMakeLists.txt`, otherwise a status message is printed and the suite is skipped (CTest then has no cases). |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF` | `ON`, `OFF` | Build `benchmarks/`. Added only when `benchmarks/CMakeLists.txt` exists; otherwise a status message is printed and the directory is skipped. |
 | `MOTEVM_BUILD_FUZZERS` | `OFF` | `ON`, `OFF` | Build libFuzzer targets; Clang only. A non-Clang compiler prints a warning and skips; a missing `fuzz/CMakeLists.txt` prints a status message and skips. |
 | `MOTEVM_WERROR` | `OFF` | `ON`, `OFF` | Treat warnings as errors: adds `/WX` for MSVC and `-Werror` for GCC/Clang. |
@@ -49,15 +49,14 @@ cmake --build build
 
 ### 2.2 Targets
 
-Three static libraries are excluded from module discovery:
+Two static libraries are excluded from module discovery:
 
 | Target | Type | Sources | Dependencies |
 | --- | --- | --- | --- |
 | `motevm_core` (alias `motevm::core`) | STATIC | `src/include/parse.cpp`, `verifier.cpp`, `disasm.cpp` | none |
-| `motevm_archive` (alias `motevm::archive`) | STATIC | `src/include/archive/*.cpp` | PUBLIC `motevm_core` |
 | `motevm_tools` | STATIC | `src/include/asm/*.cpp`, `common/*.cpp`, `dis/*.cpp` | PUBLIC `motevm_core` |
 
-All three libraries expose `src/include` as a PUBLIC include directory and require C++20.
+Both libraries expose `src/include` as a PUBLIC include directory and require C++20. Code used by a single module stays inside that module: the MTR container sources live in `src/motear/` with headers in `src/motear/include/`, and are compiled straight into the `motear` executable.
 
 Executable targets are discovered from directories: every direct child of `src/` (except `include`) is a module, the directory name must match `[a-z][a-z0-9_]*`, and it must contain `<module>.cpp` as the entry point. The module's `*.cpp` files are collected recursively, excluding files under `include/`.
 
@@ -68,7 +67,7 @@ Current modules and link relationships:
 | `motevm` | `src/motevm/motevm.cpp` | `motevm_core` |
 | `moteasm` | `src/moteasm/moteasm.cpp` | `motevm_tools` |
 | `motedis` | `src/motedis/motedis.cpp` | `motevm_tools` |
-| `motear` | `src/motear/motear.cpp` | `motevm_archive`, `motevm_tools` |
+| `motear` | `src/motear/motear.cpp` | `motevm_tools` |
 | `builder` | `src/builder/builder.cpp` | none (uses `src/include` headers only) |
 
 Module names must not collide with CMake built-in targets (`all`, `clean`, `test`, `install`, and so on). An invalid directory name, a missing main file, or a module without any `.cpp` file fails configuration.
@@ -238,8 +237,9 @@ Without 32-bit multilib, configuration fails with a message to use a MinGW32 too
 
 ## 4. Test, benchmark and fuzz status
 
-`tests/` is part of the repository and contains unit tests plus CLI integration
-checks. `benchmarks/` and `fuzz/` remain local working directories.
+`tests/` is not tracked: the suite is a local working copy (here under
+`deepseek-cache/tests/`) and is selected with `-DMOTEVM_TEST_DIR=`. `benchmarks/`
+and `fuzz/` are local directories as well.
 
 ```bash
 cmake --build build
@@ -248,12 +248,12 @@ ctest --test-dir build --output-on-failure
 
 | Option | Default | Behavior |
 | --- | --- | --- |
-| `MOTEVM_BUILD_TESTS=ON` | yes | Builds `tests/`, calls `enable_testing()` and registers the `unit` and `cli` CTest cases |
+| `MOTEVM_BUILD_TESTS=ON` | yes | Builds `MOTEVM_TEST_DIR` (default `tests/`), calls `enable_testing()` and registers the `unit` and `cli` CTest cases; skipped when the directory is absent |
 | `MOTEVM_BUILD_BENCHMARKS=ON` | no | Adds `benchmarks/CMakeLists.txt` when present; otherwise prints a status message and skips |
 | `MOTEVM_BUILD_FUZZERS=ON` | no | Adds `fuzz/` with Clang; other compilers print a warning first |
 
-CI covers Linux (Clang/GCC, x64/x86), Windows/MSVC (x64/x86), ASan/UBSan,
-`MOTEVM_WERROR=ON`, and the standalone `builder`.
+The local CI configuration (`.github/`, not tracked) covers Linux (Clang/GCC, x64/x86),
+Windows/MSVC (x64/x86), ASan/UBSan, `MOTEVM_WERROR=ON`, and the standalone `builder`.
 
 ## 5. Version and compatibility
 
@@ -272,8 +272,8 @@ motedis 0.1.0 (MOTEBC 1.0)
 motear 0.1.0 (MTR 1.0)
 ```
 
-Changes are recorded in `CHANGELOG.md`; release tags are created by the
-maintainers on frozen commits. Version numbers come from the source constants.
+The repository carries the release tag `motevm-0.1.0-frozen` (on commit `4d96511`);
+changes are recorded in the git history and version numbers come from the source constants.
 
 Compatibility is defined by the current implementation:
 
@@ -306,7 +306,9 @@ Compatibility is defined by the current implementation:
    build/cmake/clang-x64-release/bin/motevm hello.mbc
    ```
 
-3. Run the tests: `ctest --test-dir build --output-on-failure`; repeat once with
+3. Run the local test suite: configure with
+   `-DMOTEVM_TEST_DIR=$PWD/deepseek-cache/tests`, then
+   `ctest --test-dir build --output-on-failure`; repeat once with
    `-DMOTEVM_WERROR=ON` and once with `-DMOTEVM_SANITIZERS=ON`.
 
 4. Disassemble/reassemble round trip: run `motedis --check-roundtrip hello.mbc -o hello.out.mta`, reassemble it and run it; the output must match the original module.
@@ -320,4 +322,4 @@ Compatibility is defined by the current implementation:
    every target.
 
 8. Update the release status in README, this document and `docs/README.md` in
-   the tagging commit, and record the changes in `CHANGELOG.md`.
+   the tagging commit.

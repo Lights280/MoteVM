@@ -34,7 +34,7 @@ cmake --build build
 | `MOTEVM_COMPILER` | `auto` | `auto`、`clang`、`gcc`、`msvc` | 编译器选择。`auto` 在非 Visual Studio 生成器下优先查找 `clang++`（依次尝试 `clang++`、`clang++-20`、`clang++-19`、`clang++-18`）；找不到时给出警告并交给 CMake 默认编译器。`clang` 查找 `clang++` 系列，`gcc` 查找 `g++`（`g++`、`g++-15`、`g++-14`），找不到即 `FATAL_ERROR`。`msvc` 在 Ninja/Makefiles 下要求 `cl` 已在开发环境中，否则 `FATAL_ERROR`；Visual Studio 生成器由生成器决定编译器。配置后会校验编译器 ID。 |
 | `MOTEVM_ARCH` | `native` | `native`、`x86`、`x64` | 目标架构。`native` 按宿主机指针宽度解析为 `x64` 或 `x86`；其它值直接指定 32/64 位。非法值触发 `FATAL_ERROR`。 |
 | `MOTEVM_BUILD_TOOLS` | `ON` | `ON`、`OFF` | 构建 `src/` 下自动发现的模块可执行文件。`OFF` 时仍会构建三个静态库，但不生成工具可执行文件。 |
-| `MOTEVM_BUILD_TESTS` | `ON` | `ON`、`OFF` | 构建 `tests/`。仅当 `tests/CMakeLists.txt` 存在时调用 `add_subdirectory(tests)` 并启用 CTest；目录不存在时打印状态消息并跳过。 |
+| `MOTEVM_BUILD_TESTS` | `ON` | `ON`、`OFF` | 构建测试套件。目录由 `MOTEVM_TEST_DIR` 指定（默认 `tests/`）；仅当该目录下存在 `CMakeLists.txt` 时调用 `add_subdirectory` 并启用 CTest，否则打印状态消息并跳过（此时 `ctest` 无用例）。 |
 | `MOTEVM_BUILD_BENCHMARKS` | `OFF` | `ON`、`OFF` | 构建 `benchmarks/`。仅当 `benchmarks/CMakeLists.txt` 存在时加入；否则打印状态消息并跳过。 |
 | `MOTEVM_BUILD_FUZZERS` | `OFF` | `ON`、`OFF` | 构建 libFuzzer 目标，仅支持 Clang。非 Clang 编译器下给出警告并跳过；`fuzz/CMakeLists.txt` 不存在时打印状态消息并跳过。 |
 | `MOTEVM_WERROR` | `OFF` | `ON`、`OFF` | 把警告视为错误：MSVC 追加 `/WX`，GCC/Clang 追加 `-Werror`。 |
@@ -49,15 +49,14 @@ cmake --build build
 
 ### 2.2 目标
 
-三个静态库不参与模块自动发现：
+两个静态库不参与模块自动发现：
 
 | 目标 | 类型 | 源文件 | 依赖 |
 | --- | --- | --- | --- |
 | `motevm_core`（别名 `motevm::core`） | STATIC | `src/include/parse.cpp`、`verifier.cpp`、`disasm.cpp` | 无 |
-| `motevm_archive`（别名 `motevm::archive`） | STATIC | `src/include/archive/*.cpp` | PUBLIC `motevm_core` |
 | `motevm_tools` | STATIC | `src/include/asm/*.cpp`、`common/*.cpp`、`dis/*.cpp` | PUBLIC `motevm_core` |
 
-三个库都以 `src/include` 作为 PUBLIC include 目录，并要求 C++20。
+两个库都以 `src/include` 作为 PUBLIC include 目录，并要求 C++20。只被单个模块使用的代码留在该模块内：MTR 容器源文件位于 `src/motear/`，头文件在 `src/motear/include/`，直接编译进 `motear` 可执行文件。
 
 可执行目标由目录自动发现：`src/` 的每个直接子目录（`include` 除外）都是一个模块，模块目录名必须匹配 `[a-z][a-z0-9_]*`，且必须包含 `<module>.cpp` 作为入口。模块内的 `*.cpp` 递归收集，但 `include/` 下的文件被排除。
 
@@ -68,7 +67,7 @@ cmake --build build
 | `motevm` | `src/motevm/motevm.cpp` | `motevm_core` |
 | `moteasm` | `src/moteasm/moteasm.cpp` | `motevm_tools` |
 | `motedis` | `src/motedis/motedis.cpp` | `motevm_tools` |
-| `motear` | `src/motear/motear.cpp` | `motevm_archive`、`motevm_tools` |
+| `motear` | `src/motear/motear.cpp` | `motevm_tools` |
 | `builder` | `src/builder/builder.cpp` | 无（仅使用 `src/include` 头文件） |
 
 模块名不能与 CMake 内置目标冲突（`all`、`clean`、`test`、`install` 等）。目录名不合法、缺少主文件或没有任何 `.cpp` 都会导致配置失败。
@@ -238,8 +237,8 @@ cmake -S . -B build -G Ninja -DMOTEVM_COMPILER=gcc -DMOTEVM_ARCH=x86
 
 ## 4. 测试、基准与模糊测试状态
 
-`tests/` 随仓库发布，包含单元测试与 CLI 集成检查。`benchmarks/` 与 `fuzz/`
-仍是本地工作目录。
+`tests/` 不在版本库中：测试套件是本地工作副本（本工作区位于 `deepseek-cache/tests/`），
+构建时用 `-DMOTEVM_TEST_DIR=` 指向它。`benchmarks/` 与 `fuzz/` 同样只是本地目录。
 
 ```bash
 cmake --build build
@@ -248,12 +247,12 @@ ctest --test-dir build --output-on-failure
 
 | 选项 | 默认 | 行为 |
 | --- | --- | --- |
-| `MOTEVM_BUILD_TESTS=ON` | 是 | 构建 `tests/`、调用 `enable_testing()` 并注册 `unit` / `cli` 两个 CTest 用例 |
+| `MOTEVM_BUILD_TESTS=ON` | 是 | 构建 `MOTEVM_TEST_DIR`（默认 `tests/`）、调用 `enable_testing()` 并注册 `unit` / `cli` 两个 CTest 用例；目录不存在时跳过 |
 | `MOTEVM_BUILD_BENCHMARKS=ON` | 否 | `benchmarks/CMakeLists.txt` 存在时加入；否则打印状态消息并跳过 |
 | `MOTEVM_BUILD_FUZZERS=ON` | 否 | Clang 下加入 `fuzz/`；非 Clang 下先打印警告 |
 
-CI 覆盖 Linux（Clang/GCC，x64/x86）、Windows/MSVC（x64/x86）、ASan/UBSan、
-`MOTEVM_WERROR=ON` 与独立 `builder` 构建。
+本地 CI 配置（`.github/`，未入库）覆盖 Linux（Clang/GCC，x64/x86）、Windows/MSVC（x64/x86）、
+ASan/UBSan、`MOTEVM_WERROR=ON` 与独立 `builder` 构建。
 
 ## 5. 版本与兼容性
 
@@ -272,7 +271,7 @@ motedis 0.1.0 (MOTEBC 1.0)
 motear 0.1.0 (MTR 1.0)
 ```
 
-仓库当前没有 git 标签，也没有 `CHANGELOG`。版本号以源码常量为准。
+仓库已有发布标签 `motevm-0.1.0-frozen`（打在提交 `4d96511` 上）；变更记录见 git 提交历史，版本号以源码常量为准。
 
 兼容性以当前实现为准：
 
@@ -305,7 +304,8 @@ motear 0.1.0 (MTR 1.0)
    build/cmake/clang-x64-release/bin/motevm hello.mbc
    ```
 
-3. 运行测试：`ctest --test-dir build --output-on-failure`；再分别用
+3. 运行本地测试套件：配置时加 `-DMOTEVM_TEST_DIR=$PWD/deepseek-cache/tests`，
+   再执行 `ctest --test-dir build --output-on-failure`；随后分别用
    `-DMOTEVM_WERROR=ON`、`-DMOTEVM_SANITIZERS=ON` 各跑一次。
 
 4. 反汇编/再汇编往返：`motedis --check-roundtrip hello.mbc -o hello.out.mta` 后重新汇编并运行，输出应与原模块一致。
@@ -317,5 +317,4 @@ motear 0.1.0 (MTR 1.0)
 7. 用 `builder doctor` / `builder targets` 确认工具链与目标清单，并运行
    `builder --build-dir <tmp> --werror` 确认独立构建驱动能构建全部目标。
 
-8. 在打 tag 的同一提交中更新 README / 本文 / `docs/README.md` 的发布状态，
-   并把变更写入 `CHANGELOG.md`。
+8. 在打 tag 的同一提交中更新 README / 本文 / `docs/README.md` 的发布状态。

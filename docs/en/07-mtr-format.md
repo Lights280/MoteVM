@@ -2,7 +2,7 @@
 
 [简体中文](../07-mtr-format.md) | [English](07-mtr-format.md)
 
-> **Version note**: The MTR format version is **1.0**, and this document corresponds to the current implementation of MoteVM **0.1.0**. The repository does not yet publish a tagged release, so this document is a best-effort reference; if it disagrees with the implementation, `src/include/archive/archive.cpp`, `writer.cpp`, `manifest.cpp`, `name.cpp`, and `util.cpp` are authoritative. MTR files use the `.mtr` suffix.
+> **Version note**: The MTR format version is **1.0**, and this document corresponds to the current implementation of MoteVM **0.1.0**. The repository does not yet publish a tagged release, so this document is a best-effort reference; if it disagrees with the implementation, `src/motear/archive.cpp`, `manifest.cpp`, `name.cpp`, `util.cpp`, and `writer.cpp` are authoritative. MTR files use the `.mtr` suffix.
 
 ## 1. Overview
 
@@ -107,7 +107,7 @@ Only zero padding (at most 7 bytes) is allowed between the end of the string tab
 
 ## 5. Name rules
 
-Names are logical **relative paths** inside the package, not host filesystem paths. The rules are implemented in `src/include/archive/name.hpp` and `name.cpp`.
+Names are logical **relative paths** inside the package, not host filesystem paths. The rules are implemented in `src/motear/name.cpp` and `src/motear/include/name.hpp`.
 
 ### 5.1 Encoding and characters
 

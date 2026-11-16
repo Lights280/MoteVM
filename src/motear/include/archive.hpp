@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "define.hpp"
-#include "archive/manifest.hpp"
+#include "manifest.hpp"
 
 namespace ARCHIVE
 {

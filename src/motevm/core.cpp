@@ -999,7 +999,6 @@ int Core::executeHot(StackFrame *&frame, dword &pc, dword &executedLocal)
             const int result = step(frame, pc, executedLocal, inst);
             ipc = pc;
             count = executedLocal;
-            regs = frame != nullptr ? frame->registers.data() : nullptr;
             if (result == STEP_HALT)
             {
                 VM_SYNC();
@@ -1018,6 +1017,17 @@ int Core::executeHot(StackFrame *&frame, dword &pc, dword &executedLocal)
                 VM_SYNC();
                 return result;
             }
+            // step() clears `frame` only through takeContext(), which reports
+            // NO_CALLER and is mapped to STEP_HALT above. Keep the invariant
+            // explicit so a future step() path cannot resume with a null base.
+            if (frame == nullptr)
+            {
+                lastError = CORE::NO_ACTIVE_FRAME;
+                lastErrorPc = instructionPc;
+                VM_SYNC();
+                return CORE::NO_ACTIVE_FRAME;
+            }
+            regs = frame->registers.data();
             break;
         }
         }

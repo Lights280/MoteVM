@@ -1,4 +1,4 @@
-#include "archive/writer.hpp"
+#include "writer.hpp"
 
 
 #include <algorithm>
@@ -6,8 +6,8 @@
 #include <utility>
 #include <vector>
 
-#include "archive/name.hpp"
-#include "archive/util.hpp"
+#include "name.hpp"
+#include "util.hpp"
 #include "parse.hpp"
 
 namespace ARCHIVE
