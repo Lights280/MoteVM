@@ -742,14 +742,41 @@ namespace
             << "\n";
         return 0;
     }
+
+    const char *commandName(CLI::Command command)
+    {
+        switch (command)
+        {
+        case CLI::Command::pack:
+            return "pack";
+        case CLI::Command::list:
+            return "list";
+        case CLI::Command::info:
+            return "info";
+        case CLI::Command::verify:
+            return "verify";
+        case CLI::Command::unpack:
+            return "unpack";
+        case CLI::Command::none:
+        default:
+            return "";
+        }
+    }
+
+    std::string currentCommandText(CLI::Command command)
+    {
+        return command == CLI::Command::none
+                   ? std::string("no command")
+                   : "'" + std::string(commandName(command)) + "'";
+    }
 }
 
-int CLI::parse(int argc, char *argv[], Options &options)
+int CLI::parse(int argc, char *argv[], Options &options, std::string &error)
 {
-    int index = 1;
-    if (index < argc && argv[index] != nullptr && argv[index][0] != '-')
+    int start = 1;
+    if (start < argc && argv[start] != nullptr && argv[start][0] != '-')
     {
-        const std::string command = argv[index++];
+        const std::string command = argv[start++];
         if (command == "pack")
             options.command = Command::pack;
         else if (command == "list")
@@ -761,19 +788,39 @@ int CLI::parse(int argc, char *argv[], Options &options)
         else if (command == "unpack")
             options.command = Command::unpack;
         else
+        {
+            error = "unknown command '" + command + "'" +
+                    TOOL::closestName(command, {"pack", "list", "info", "verify", "unpack"});
             return 1;
+        }
     }
 
+    TOOL::ArgReader args(argc, argv, "hvoC", "oC", start);
     bool endOfOptions = false;
-    for (; index < argc; ++index)
-    {
-        if (argv[index] == nullptr)
-            return 1;
-        const std::string argument = argv[index];
+    std::string argument;
+    const auto onlyFor = [&](Command required, std::string_view option) {
+        if (options.command == required)
+            return true;
+        error = "option '" + std::string(option) + "' is only valid with '" +
+                commandName(required) + "' (current command: " +
+                currentCommandText(options.command) + ")";
+        return false;
+    };
+    const auto onlyForPackOrUnpack = [&](std::string_view option) {
+        if (options.command == Command::pack || options.command == Command::unpack)
+            return true;
+        error = "option '" + std::string(option) +
+                "' is only valid with 'pack' or 'unpack' (current command: " +
+                currentCommandText(options.command) + ")";
+        return false;
+    };
 
+    while (args.next(argument))
+    {
         if (!endOfOptions && TOOL::isEndOfOptions(argument))
         {
             endOfOptions = true;
+            args.disableExpansion();
             continue;
         }
         if (!endOfOptions && (argument == "-h" || argument == "--help"))
@@ -791,195 +838,275 @@ int CLI::parse(int argc, char *argv[], Options &options)
         {
             std::string value;
 
-            if (TOOL::matchesOption(argument, "-o") || TOOL::matchesOption(argument, "--output"))
+            if (argument == "-o" || TOOL::matchesOption(argument, "--output"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, argument == "-o" ? "-o" : "--output",
-                                       argc, argv, index, value))
+                const std::string_view name = argument == "-o" ? "-o" : "--output";
+                if (!onlyFor(Command::pack, name))
                     return 1;
+                if (!TOOL::optionValue(argument, name, args, value))
+                {
+                    error = "option '" + std::string(name) +
+                            "' needs a value (use '" + std::string(name) +
+                            " FILE' or '" + std::string(name) + "=FILE')";
+                    return 1;
+                }
                 options.output = value;
                 continue;
             }
-            if (TOOL::matchesOption(argument, "-C") || TOOL::matchesOption(argument, "--directory"))
+            if (argument == "-C" || TOOL::matchesOption(argument, "--directory"))
             {
-                if (options.command != Command::unpack ||
-                    !TOOL::optionValue(argument, argument == "-C" ? "-C" : "--directory",
-                                       argc, argv, index, value))
+                const std::string_view name = argument == "-C" ? "-C" : "--directory";
+                if (!onlyFor(Command::unpack, name))
                     return 1;
+                if (!TOOL::optionValue(argument, name, args, value))
+                {
+                    error = "option '" + std::string(name) +
+                            "' needs a value (use '" + std::string(name) +
+                            " DIR' or '" + std::string(name) + "=DIR')";
+                    return 1;
+                }
                 options.directory = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--module"))
             {
-                if (!TOOL::optionValue(argument, "--module", argc, argv, index, value))
+                if (!onlyForPackOrUnpack("--module"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--module", args, value))
+                {
+                    error = "option '--module' needs a value (FILE[=NAME] or entry name)";
+                    return 1;
+                }
                 if (options.command == Command::pack)
                 {
                     FileSpec spec;
-                    std::string error;
-                    if (!parseFileSpec(value, spec, error))
+                    std::string specError;
+                    if (!parseFileSpec(value, spec, specError))
+                    {
+                        error = "--module '" + value + "': " + specError;
                         return 1;
+                    }
                     options.modules.push_back(std::move(spec));
                 }
-                else if (options.command == Command::unpack)
-                {
-                    options.moduleFilter.push_back(value);
-                }
                 else
-                {
-                    return 1;
-                }
+                    options.moduleFilter.push_back(value);
                 continue;
             }
             if (TOOL::matchesOption(argument, "--resource"))
             {
-                if (!TOOL::optionValue(argument, "--resource", argc, argv, index, value))
+                if (!onlyForPackOrUnpack("--resource"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--resource", args, value))
+                {
+                    error = "option '--resource' needs a value (FILE[=NAME] or entry name)";
+                    return 1;
+                }
                 if (options.command == Command::pack)
                 {
                     FileSpec spec;
-                    std::string error;
-                    if (!parseFileSpec(value, spec, error))
+                    std::string specError;
+                    if (!parseFileSpec(value, spec, specError))
+                    {
+                        error = "--resource '" + value + "': " + specError;
                         return 1;
+                    }
                     options.resources.push_back(std::move(spec));
                 }
-                else if (options.command == Command::unpack)
-                {
-                    options.resourceFilter.push_back(value);
-                }
                 else
-                {
-                    return 1;
-                }
+                    options.resourceFilter.push_back(value);
                 continue;
             }
             if (TOOL::matchesOption(argument, "--entry"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--entry", argc, argv, index, value))
+                if (!onlyFor(Command::pack, "--entry"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--entry", args, value))
+                {
+                    error = "option '--entry' needs a value (module name)";
+                    return 1;
+                }
                 options.entry = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--name"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--name", argc, argv, index, value))
+                if (!onlyFor(Command::pack, "--name"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--name", args, value))
+                {
+                    error = "option '--name' needs a value (package name)";
+                    return 1;
+                }
                 options.packageName = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--package-version"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--package-version", argc, argv, index,
-                                       value))
+                if (!onlyFor(Command::pack, "--package-version"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--package-version", args, value))
+                {
+                    error = "option '--package-version' needs a value";
+                    return 1;
+                }
                 options.packageVersion = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--description"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--description", argc, argv, index, value))
+                if (!onlyFor(Command::pack, "--description"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--description", args, value))
+                {
+                    error = "option '--description' needs a value";
+                    return 1;
+                }
                 options.description = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--author"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--author", argc, argv, index, value))
+                if (!onlyFor(Command::pack, "--author"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--author", args, value))
+                {
+                    error = "option '--author' needs a value";
+                    return 1;
+                }
                 options.author = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--license"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--license", argc, argv, index, value))
+                if (!onlyFor(Command::pack, "--license"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--license", args, value))
+                {
+                    error = "option '--license' needs a value";
+                    return 1;
+                }
                 options.license = value;
                 continue;
             }
             if (TOOL::matchesOption(argument, "--build-id"))
             {
-                if (options.command != Command::pack ||
-                    !TOOL::optionValue(argument, "--build-id", argc, argv, index, value))
+                if (!onlyFor(Command::pack, "--build-id"))
                     return 1;
+                if (!TOOL::optionValue(argument, "--build-id", args, value))
+                {
+                    error = "option '--build-id' needs a value";
+                    return 1;
+                }
                 options.buildId = value;
                 continue;
             }
             if (argument == "--verbose")
             {
-                if (options.command != Command::list)
+                if (!onlyFor(Command::list, "--verbose"))
                     return 1;
                 options.verbose = true;
                 continue;
             }
             if (argument == "--verify")
             {
-                if (options.command != Command::list)
+                if (!onlyFor(Command::list, "--verify"))
                     return 1;
                 options.verify = true;
                 continue;
             }
             if (argument == "--strict")
             {
-                if (options.command != Command::verify)
+                if (!onlyFor(Command::verify, "--strict"))
                     return 1;
                 options.strict = true;
                 continue;
             }
             if (argument == "--no-modules")
             {
-                if (options.command != Command::verify)
+                if (!onlyFor(Command::verify, "--no-modules"))
                     return 1;
                 options.noModules = true;
                 continue;
             }
             if (argument == "--json")
             {
-                if (options.command != Command::info)
+                if (!onlyFor(Command::info, "--json"))
                     return 1;
                 options.json = true;
                 continue;
             }
             if (argument == "--force")
             {
-                if (options.command != Command::unpack)
+                if (!onlyFor(Command::unpack, "--force"))
                     return 1;
                 options.force = true;
                 continue;
             }
+
+            error = "unknown option '" + argument + "'" +
+                    TOOL::optionSuggestion(
+                        argument,
+                        {"-h", "--help", "-v", "--version", "-o", "--output", "-C",
+                         "--directory", "--module", "--resource", "--entry", "--name",
+                         "--package-version", "--description", "--author", "--license",
+                         "--build-id", "--verbose", "--verify", "--strict",
+                         "--no-modules", "--json", "--force"});
             return 1;
         }
 
-        if (options.command == Command::none || options.command == Command::pack)
+        if (options.command == Command::none)
+        {
+            error = "unexpected argument '" + argument +
+                    "' (a command is required first)";
             return 1;
+        }
+        if (options.command == Command::pack)
+        {
+            error = "unexpected argument '" + argument + "' (pack takes options only)";
+            return 1;
+        }
         if (!options.input.empty())
+        {
+            error = "unexpected argument '" + argument +
+                    "' (only one archive is accepted)";
             return 1;
+        }
         options.input = argument;
     }
 
     if (options.help || options.version)
         return 0;
     if (options.command == Command::none)
+    {
+        error = "missing command (expected pack, list, info, verify or unpack)";
         return 1;
+    }
 
     if (options.command == Command::pack)
     {
         if (options.output.empty())
+        {
+            error = "pack needs -o OUTPUT";
             return 1;
+        }
         if (options.modules.empty() && options.resources.empty())
+        {
+            error = "pack needs at least one --module or --resource";
             return 1;
+        }
     }
     else
     {
         if (options.input.empty())
+        {
+            error = std::string(commandName(options.command)) + " needs an archive FILE";
             return 1;
+        }
         if (options.command == Command::unpack && options.directory.empty())
+        {
+            error = "unpack needs -C DIR";
             return 1;
+        }
     }
     return 0;
 }

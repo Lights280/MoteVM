@@ -47,9 +47,13 @@ motevm [extern_parameters] <entry_mbc_module|entry_mtr_archive> [ext_mbc_modules
 - `-i`、`--step`、`--break`、`--trace` 任一出现即安装 `CORE::DebugHook`；仅给 `--break`
   时**不**在入口暂停，仅给 `--trace` 时不进入 REPL。
 - `--trace` 可与 REPL 同时使用；建议配 `--trace-file`，避免与提示符混流。
-- 长选项支持 `--name=value`；`-w` 取下一个 token 原样作为值（允许以 `-` 开头）。
+- 长选项支持 `--name=value`；`-w` 取下一个 token 原样作为值（允许以 `-` 开头），也可写
+  `-wDIR` 或 `-w=DIR`。
+- 短选项可捆绑：`-dsi` 等价于 `-d -s -i`；带值的 `-w` 必须位于捆绑末尾，其值取剩余字符或
+  下一个 token。
 - `--break`/`--trace-file` 缺值或空值、`--trace`/`--trace-limit` 非法值、`--workspace=`
-  空值 ⇒ 用法错误（exit 1），用法文本写 stderr、stdout 无输出。
+  空值 ⇒ 用法错误（exit 1）：先向 stderr 写 `error: <原因>`（能确定近似选项时附
+  `did you mean` 提示），再写用法文本；stdout 无输出。
 - `--entry` 只允许与 `.mtr` 入口一起使用；`.mtr` 入口不允许再跟外部 `.mbc`（均 exit 1）。
 - 未知选项、缺少入口模块 ⇒ 用法错误（exit 1）。
 

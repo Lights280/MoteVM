@@ -8,7 +8,6 @@
 #include "asm/assembler.hpp"
 #include "define.hpp"
 #include "dis/disassembler.hpp"
-#include "common/args.hpp"
 #include "common/cli.hpp"
 #include "common/diagnostics.hpp"
 #include "common/io.hpp"
@@ -16,15 +15,17 @@
 #include "common/text.hpp"
 #include "parse.hpp"
 
-int CLI::parse(int argc, char *argv[], Options &options)
+int CLI::parse(int argc, char *argv[], Options &options, std::string &error)
 {
+    TOOL::ArgReader args(argc, argv, "hvo", "o");
     bool endOfOptions = false;
-    for (int index = 1; index < argc; ++index)
+    std::string argument;
+    while (args.next(argument))
     {
-        const std::string argument = argv[index] == nullptr ? std::string() : argv[index];
         if (!endOfOptions && TOOL::isEndOfOptions(argument))
         {
             endOfOptions = true;
+            args.disableExpansion();
             continue;
         }
         if (!endOfOptions && (argument == "-h" || argument == "--help"))
@@ -54,36 +55,62 @@ int CLI::parse(int argc, char *argv[], Options &options)
         }
         if (!endOfOptions && (argument == "-o" || TOOL::matchesOption(argument, "--output")))
         {
-            const bool ok =
-                argument == "-o"
-                    ? TOOL::takeValue(argc, argv, index, options.output)
-                    : TOOL::optionValue(argument, "--output", argc, argv, index,
-                                        options.output);
-            if (!ok)
+            const std::string_view name = argument == "-o" ? "-o" : "--output";
+            if (!TOOL::optionValue(argument, name, args, options.output))
+            {
+                error = "option '" + std::string(name) +
+                        "' needs a value (use '" + std::string(name) +
+                        " FILE' or '" + std::string(name) + "=FILE')";
                 return 1;
+            }
             options.outputSet = true;
             continue;
         }
         if (!endOfOptions && TOOL::isOptionToken(argument))
+        {
+            error = "unknown option '" + argument + "'" +
+                    TOOL::optionSuggestion(argument,
+                                           {"-h", "--help", "-v", "--version", "-o",
+                                            "--output", "--no-debug", "--annotate",
+                                            "--check-roundtrip"});
             return 1;
+        }
         if (options.input.empty())
             options.input = argument;
         else
+        {
+            error = "unexpected argument '" + argument +
+                    "' (only one input file is accepted)";
             return 1;
+        }
     }
 
     if (options.help || options.version)
         return 0;
     if (options.input.empty())
+    {
+        error = "missing input file (usage: motedis [options] <input.mbc>)";
         return 1;
+    }
     // RT-1 compares the whole module; --annotate and --no-debug both change
     // the text that is re-assembled, so neither can be combined with it.
-    if ((options.annotate || options.noDebug) && options.checkRoundtrip)
+    if (options.annotate && options.checkRoundtrip)
+    {
+        error = "--annotate cannot be combined with --check-roundtrip";
         return 1;
+    }
+    if (options.noDebug && options.checkRoundtrip)
+    {
+        error = "--no-debug cannot be combined with --check-roundtrip";
+        return 1;
+    }
     if (options.outputSet && !TOOL::isStdioToken(options.output) &&
         !TOOL::isStdioToken(options.input) &&
         TOOL::samePath(options.input, options.output))
+    {
+        error = "input and output are the same file '" + options.input + "'";
         return 1;
+    }
     return 0;
 }
 

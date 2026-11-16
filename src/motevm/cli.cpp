@@ -1010,21 +1010,26 @@ namespace
     }
 }
 
-int CLI::parse(int argc, char *argv[], Options &options)
+int CLI::parse(int argc, char *argv[], Options &options, std::string &error)
 {
-    int index = 1;
+    TOOL::ArgReader args(argc, argv, "vhdrsiw", "w");
 
     // 1) extern parameters (must come before the entry module)
-    while (index < argc)
+    std::string arg;
+    bool haveEntry = false;
+    while (args.next(arg))
     {
-        const std::string arg = argv[index];
         if (TOOL::isEndOfOptions(arg))
         {
-            ++index;
+            args.disableExpansion();
+            haveEntry = args.next(arg);
             break;
         }
         if (arg.empty() || arg[0] != '-')
+        {
+            haveEntry = true;
             break;
+        }
         if (arg == "-v" || arg == "--version")
         {
             options.version = true;
@@ -1048,65 +1053,113 @@ int CLI::parse(int argc, char *argv[], Options &options)
         else if (TOOL::matchesOption(arg, "--trace"))
         {
             std::string value;
-            if (!TOOL::optionValue(arg, "--trace", argc, argv, index, value) ||
-                !traceLevelValue(value, options.trace))
+            if (!TOOL::optionValue(arg, "--trace", args, value))
+            {
+                error = "option '--trace' needs a value (off|call|exec|full)";
                 return USAGE;
+            }
+            if (!traceLevelValue(value, options.trace))
+            {
+                error = "invalid --trace '" + value +
+                        "' (expected off, call, exec or full)";
+                return USAGE;
+            }
         }
         else if (TOOL::matchesOption(arg, "--trace-file"))
         {
-            if (!TOOL::optionValue(arg, "--trace-file", argc, argv, index,
-                                   options.traceFile))
+            if (!TOOL::optionValue(arg, "--trace-file", args, options.traceFile))
+            {
+                error = "option '--trace-file' needs a value (output path; '-' = stdout)";
                 return USAGE;
+            }
         }
         else if (TOOL::matchesOption(arg, "--trace-limit"))
         {
             std::string value;
-            if (!TOOL::optionValue(arg, "--trace-limit", argc, argv, index, value) ||
-                !dwordValue(value, options.traceLimit))
+            if (!TOOL::optionValue(arg, "--trace-limit", args, value))
+            {
+                error = "option '--trace-limit' needs a value (an integer 0..4294967295)";
                 return USAGE;
+            }
+            if (!dwordValue(value, options.traceLimit))
+            {
+                error = "invalid --trace-limit '" + value +
+                        "' (expected an integer 0..4294967295)";
+                return USAGE;
+            }
         }
         else if (TOOL::matchesOption(arg, "--break"))
         {
             std::string value;
-            if (!TOOL::optionValue(arg, "--break", argc, argv, index, value))
+            if (!TOOL::optionValue(arg, "--break", args, value))
+            {
+                error = "option '--break' needs a value (breakpoint specification)";
                 return USAGE;
+            }
             options.breakpoints.emplace_back(std::move(value));
         }
         else if (TOOL::matchesOption(arg, "--entry"))
         {
-            if (!TOOL::optionValue(arg, "--entry", argc, argv, index, options.entryName))
+            if (!TOOL::optionValue(arg, "--entry", args, options.entryName))
+            {
+                error = "option '--entry' needs a value (module name)";
                 return USAGE;
+            }
         }
         else if (arg == "-w" || TOOL::matchesOption(arg, "--workspace"))
         {
+            const std::string_view name = arg == "-w" ? "-w" : "--workspace";
             std::string value;
-            const bool ok =
-                arg == "-w"
-                    ? TOOL::takeValue(argc, argv, index, value)
-                    : TOOL::optionValue(arg, "--workspace", argc, argv, index, value);
-            if (!ok)
+            if (!TOOL::optionValue(arg, name, args, value))
+            {
+                error = "option '" + std::string(name) +
+                        "' needs a value (use '" + std::string(name) +
+                        " DIR' or '" + std::string(name) + "=DIR')";
                 return USAGE;
+            }
             options.workspace = std::move(value); // the value is taken verbatim
         }
         else
+        {
+            error = "unknown option '" + arg + "'" +
+                    TOOL::optionSuggestion(
+                        arg,
+                        {"-v", "--version", "-h", "--help", "-d", "--debug", "-r",
+                         "--release", "-s", "--status", "-i", "--interactive",
+                         "--step", "--trace", "--trace-file", "--trace-limit",
+                         "--break", "--entry", "-w", "--workspace"});
             return USAGE;
-        ++index;
+        }
     }
 
     // 2) entry module
-    if (index >= argc)
+    if (!haveEntry || arg.empty())
+    {
+        error = "missing entry module (options must come before the entry module)";
         return USAGE;
-    options.entry = argv[index++];
+    }
+    args.disableExpansion(); // later tokens are modules/intern parameters
+    options.entry = arg;
     if (!options.entryName.empty() && !isArchivePath(options.entry))
+    {
+        error = "option '--entry' requires a .mtr entry archive";
         return USAGE;
+    }
 
     // 3) external modules: tokens ending with .mbc
-    while (index < argc && isModulePath(argv[index]))
-        options.modules.emplace_back(argv[index++]);
+    bool have = args.next(arg);
+    while (have && isModulePath(arg))
+    {
+        options.modules.emplace_back(arg);
+        have = args.next(arg);
+    }
 
     // 4) intern parameters: reserved for scripts, kept verbatim
-    while (index < argc)
-        options.intern.emplace_back(argv[index++]);
+    while (have)
+    {
+        options.intern.emplace_back(arg);
+        have = args.next(arg);
+    }
 
     return OK;
 }

@@ -161,12 +161,26 @@ GCC / Clang：
 | `--version` | 打印 builder、MoteVM 与 MOTEBC 版本 |
 | `-h, --help` | 打印帮助 |
 
+短选项可捆绑（`-vn` = `-v -n`）；带值的 `-j` 必须位于捆绑末尾（`-j4` 或 `-j 4`）。用法错误先输出
+`error: <原因>`（能确定近似选项时附修正提示），再输出帮助。
+
+编译器选择优先级：`--cxx` 最高；显式 `--compiler clang|gcc|msvc` 只尝试对应编译器；
+只有 `--compiler auto`（默认）才读取 `MOTEVM_CXX`、`CXX`，然后依次尝试 `clang++`、`g++`、`cl`。
+
+同一 build 目录同时只允许一个 builder/clean/doctor/targets：启动时在
+`<buildDir>/.builder.lock` 获取独占锁，第二个进程立即以 exit 3 失败。`clean` 拒绝
+`--build-dir` 等于项目根、项目根的祖先或位于 `src` 之内；只删除已知的 builder 产物，
+目录和普通文件都会处理。
+
+`--dry-run` 不创建 object/state/log/dep/bin 输出目录，但仍会探测工具链（会在
+`.builder/logs` 下写临时探测日志，随后删除）。缓存指纹格式升级后第一次构建会全量重建一次。
+
 环境变量：
 
 | 变量 | 作用 |
 | --- | --- |
-| `MOTEVM_CXX` | 编译器候选路径；在 `--cxx` 之后、`CXX` 与自动查找之前使用 |
-| `CXX` | 编译器候选路径，在 `MOTEVM_CXX` 之后、自动查找之前 |
+| `MOTEVM_CXX` | `--compiler auto` 时的编译器候选路径；在 `CXX` 与自动查找之前使用 |
+| `CXX` | `--compiler auto` 时的编译器候选路径，在 `MOTEVM_CXX` 之后、自动查找之前 |
 | `MOTEVM_BUILD_DIR` | 未给出 `--build-dir` 时的输出根目录，相对项目根解析 |
 | `MOTEVM_JOBS` | 未给出 `-j/--jobs` 时的并行任务数，接受 1..1024 |
 | `VSCMD_ARG_TGT_ARCH` | MSVC 开发环境的目标架构（`amd64`/`x86_64`/`win32` 等），用于判断是否需要重新进入 DevShell |
@@ -182,6 +196,10 @@ build/bin/builder[.exe]     # self 的默认位置
 ```
 
 `builder self` 默认重建到 `build/bin/builder[.exe]`；如果当前运行的 builder 本身已位于 build 树内，则原位重建该可执行文件。
+
+Windows 上 builder 使用宽字符入口（`wmain`）和 `GetEnvironmentVariableW`，参数与环境变量在内部
+统一为 UTF-8。用 MSVC 或 clang-cl 构建时直接使用，但要打开异常（`/EHsc`，CMake 的默认选项已包含）；
+若用 MinGW 的 clang++ 手动 bootstrap，需要 `-municode`。
 
 共享源组 `motevm_core` 与 `motevm_tools` 是内部目标，不出现在 `all` 中，也不能作为用户目标选择；它们在一次构建中只编译一次，并被链接它们的可执行目标复用。共享源清单硬编码在 builder 中，新增共享源时必须同时更新根 `CMakeLists.txt`。
 

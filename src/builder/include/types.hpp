@@ -14,7 +14,7 @@ namespace BUILD
     inline constexpr int USAGE = 2;
     inline constexpr int ENVIRONMENT = 3;
 
-    inline constexpr std::uint64_t FNV_OFFSET = 1469598103934665603ull;
+    inline constexpr std::uint64_t FNV_OFFSET = 14695981039346656037ull;
     inline constexpr std::uint64_t FNV_PRIME = 1099511628211ull;
 
     inline constexpr const char *TARGET_ALL = "all";
@@ -24,6 +24,7 @@ namespace BUILD
     inline constexpr const char *OBJECT_STATE_HEADER = "builder-state 1";
     inline constexpr const char *STEP_STATE_HEADER = "builder-step-state 1";
     inline constexpr const char *REEXEC_ENV = "MOTEVM_REEXEC";
+    inline constexpr const char *REEXEC_LOCK_ENV = "MOTEVM_BUILD_LOCK_HELD";
 
     using Path = std::filesystem::path;
 
@@ -99,6 +100,8 @@ namespace BUILD
         std::string devShellArch;
         bool msvcAbi = false;
         bool depFiles = true;
+        std::uint64_t cxxDigest = 0;    // content hash of the compiler (0: unknown)
+        std::uint64_t linkerDigest = 0; // content hash of the linker (0: unknown)
     };
 
     struct Target

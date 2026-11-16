@@ -35,7 +35,7 @@ namespace CLI
     };
 
     // motevm [extern_parameters] <entry_mbc_module> [ext_mbc_modules] [intern_parameters]
-    int parse(int argc, char *argv[], Options &options);
+    int parse(int argc, char *argv[], Options &options, std::string &error);
     void printUsage(std::ostream &out);
     void printVersion(std::ostream &out);
 

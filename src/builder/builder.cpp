@@ -54,20 +54,23 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -101,29 +104,25 @@ namespace BUILD
 
         std::string trimText(const std::string &text)
         {
-            std::size_t begin = 0;
-            std::size_t end = text.size();
-            while (begin < end)
-            {
-                const char c = text[begin];
-                if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
-                    break;
-                ++begin;
-            }
-            while (end > begin)
-            {
-                const char c = text[end - 1];
-                if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
-                    break;
-                --end;
-            }
-            return text.substr(begin, end - begin);
+            constexpr std::string_view whitespace = " \t\r\n";
+            const std::string_view view(text);
+            const std::size_t begin = view.find_first_not_of(whitespace);
+            if (begin == std::string_view::npos)
+                return std::string();
+            const std::size_t end = view.find_last_not_of(whitespace);
+            return std::string(view.substr(begin, end - begin + 1));
         }
 
         std::string firstLine(const std::string &text)
         {
             const std::size_t pos = text.find_first_of("\r\n");
             return trimText(text.substr(0, pos));
+        }
+
+        bool isIdentifierChar(char c)
+        {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '_';
         }
 
         bool fileExists(const Path &path)
@@ -138,6 +137,12 @@ namespace BUILD
             return std::filesystem::is_directory(path, ec);
         }
 
+        std::string pathError(const char *verb, const Path &path,
+                              const std::error_code &error)
+        {
+            return std::string(verb) + " '" + pathText(path) + "': " + error.message();
+        }
+
         bool ensureDirectory(const Path &path, std::string &error)
         {
             if (directoryExists(path))
@@ -146,7 +151,7 @@ namespace BUILD
             std::filesystem::create_directories(path, ec);
             if (ec)
             {
-                error = "cannot create '" + pathText(path) + "': " + ec.message();
+                error = pathError("cannot create", path, ec);
                 return false;
             }
             return true;
@@ -164,17 +169,24 @@ namespace BUILD
             return true;
         }
 
+        std::atomic<std::uint64_t> temporaryCounter{0};
+
         bool writeTextFileAtomic(const Path &path, const std::string &text, std::string &error)
         {
             std::error_code ec;
-            std::filesystem::create_directories(path.parent_path(), ec);
-            if (ec)
+            if (!path.parent_path().empty())
             {
-                error = "cannot create '" + pathText(path.parent_path()) + "': " + ec.message();
-                return false;
+                std::filesystem::create_directories(path.parent_path(), ec);
+                if (ec)
+                {
+                    error = pathError("cannot create", path.parent_path(), ec);
+                    return false;
+                }
             }
+            // Unique name so concurrent writers never share a temporary file.
             Path temporary = path;
-            temporary += pathFromText(".tmp");
+            temporary += pathFromText(".tmp." + std::to_string(platform::processId()) + "." +
+                                      std::to_string(temporaryCounter.fetch_add(1)));
             {
                 std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
                 if (!output)
@@ -187,17 +199,18 @@ namespace BUILD
                 if (!output)
                 {
                     error = "cannot write '" + pathText(temporary) + "'";
-                    std::filesystem::remove(temporary, ec);
+                    std::error_code removeError;
+                    std::filesystem::remove(temporary, removeError);
                     return false;
                 }
             }
-            std::filesystem::remove(path, ec);
-            ec.clear();
+            // rename() replaces the destination atomically (POSIX and the C++
+            // filesystem specification); never delete the old file first.
             std::filesystem::rename(temporary, path, ec);
             if (ec)
             {
-                error = "cannot install '" + pathText(path) + "': " + ec.message();
-                std::filesystem::remove(temporary, ec);
+                error = "cannot install '" + pathText(path) + "' (temporary file kept at '" +
+                        pathText(temporary) + "'): " + ec.message();
                 return false;
             }
             return true;
@@ -259,13 +272,15 @@ namespace BUILD
             std::uint64_t hash = FNV_OFFSET;
             for (const std::string &argument : args)
             {
+                // Length prefix keeps argument boundaries unambiguous even if
+                // an argument contains the old separator byte.
+                hash ^= static_cast<std::uint64_t>(argument.size());
+                hash *= FNV_PRIME;
                 for (char c : argument)
                 {
                     hash ^= static_cast<std::uint64_t>(static_cast<unsigned char>(c));
                     hash *= FNV_PRIME;
                 }
-                hash ^= 0x1Fu;
-                hash *= FNV_PRIME;
             }
             return hash;
         }
@@ -284,21 +299,24 @@ namespace BUILD
 
         bool parseHex64(const std::string &text, std::uint64_t &value)
         {
-            if (text.empty())
+            if (text.size() != 16)
                 return false;
-            try
+            std::uint64_t parsed = 0;
+            for (char c : text)
             {
-                std::size_t consumed = 0;
-                const unsigned long long parsed = std::stoull(text, &consumed, 16);
-                if (consumed != text.size())
+                unsigned digit = 0;
+                if (c >= '0' && c <= '9')
+                    digit = static_cast<unsigned>(c - '0');
+                else if (c >= 'a' && c <= 'f')
+                    digit = static_cast<unsigned>(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F')
+                    digit = static_cast<unsigned>(c - 'A' + 10);
+                else
                     return false;
-                value = static_cast<std::uint64_t>(parsed);
-                return true;
+                parsed = (parsed << 4) | digit;
             }
-            catch (...)
-            {
-                return false;
-            }
+            value = parsed;
+            return true;
         }
 
         std::string displayPath(const Path &path, const Path &base)
@@ -327,6 +345,8 @@ namespace BUILD
         // Child process execution
         // ============================================================================
 
+        std::optional<Path> findExecutable(const std::string &name);
+
         ProcessResult runProcess(const std::vector<std::string> &args, const Path &logPath,
                                  const Path &cwd)
         {
@@ -343,7 +363,16 @@ namespace BUILD
                 result.spawnError = directoryError;
                 return result;
             }
-            return platform::spawnProcess(args, logPath, cwd);
+            std::vector<std::string> resolved = args;
+            const std::optional<Path> executable = findExecutable(resolved[0]);
+            if (!executable)
+            {
+                ProcessResult result;
+                result.spawnError = "cannot find executable '" + resolved[0] + "'";
+                return result;
+            }
+            resolved[0] = pathText(*executable);
+            return platform::spawnProcess(resolved, logPath, cwd);
         }
 
         std::optional<Path> findExecutable(const std::string &name)
@@ -353,16 +382,22 @@ namespace BUILD
             const Path direct = pathFromText(name);
             if (direct.has_parent_path() || direct.is_absolute())
             {
-                std::error_code ec;
-                const Path absolute = std::filesystem::absolute(direct, ec);
-                if (!ec && fileExists(absolute))
-                    return absolute;
+                const std::vector<std::string> names =
+                    platform::executableNames(name, !direct.extension().empty());
+                for (const std::string &candidateName : names)
+                {
+                    const Path candidate = pathFromText(candidateName);
+                    std::error_code ec;
+                    const Path absolute = std::filesystem::absolute(candidate, ec);
+                    if (!ec && platform::isExecutable(absolute))
+                        return absolute;
+                }
                 return std::nullopt;
             }
-            const char *pathEnv = std::getenv("PATH");
-            if (pathEnv == nullptr)
+            const std::optional<std::string> pathEnv = platform::environmentValue("PATH");
+            if (!pathEnv)
                 return std::nullopt;
-            const std::string pathValue(pathEnv);
+            const std::string &pathValue = *pathEnv;
             const char separator = platform::pathListSeparator();
             const std::vector<std::string> names =
                 platform::executableNames(name, !direct.extension().empty());
@@ -376,13 +411,15 @@ namespace BUILD
                 directory = trimText(directory);
                 if (directory.size() >= 2 && directory.front() == '"' && directory.back() == '"')
                     directory = directory.substr(1, directory.size() - 2);
+                // POSIX treats an empty PATH entry as the current directory;
+                // skipping it is the safer choice for a build tool.
                 if (!directory.empty())
                 {
                     for (const std::string &candidateName : names)
                     {
                         const Path candidate =
                             pathFromText(directory) / pathFromText(candidateName);
-                        if (!fileExists(candidate))
+                        if (!platform::isExecutable(candidate))
                             continue;
                         std::error_code ec;
                         const Path absolute = std::filesystem::absolute(candidate, ec);
@@ -402,6 +439,11 @@ namespace BUILD
         {
             if (const std::optional<Path> native = platform::nativeExecutablePath())
                 return *native;
+            if (argv0 != nullptr && *argv0 != '\0')
+            {
+                if (const std::optional<Path> found = findExecutable(argv0))
+                    return *found;
+            }
             std::error_code ec;
             const Path fallback =
                 std::filesystem::absolute(pathFromText(argv0 == nullptr ? "" : argv0), ec);
@@ -415,9 +457,9 @@ namespace BUILD
         {
             const ProcessResult result = runProcess(args, logPath, cwd);
             std::string output;
-            readTextFile(logPath, output);
+            const bool read = readTextFile(logPath, output);
             removeQuiet(logPath);
-            if (!result.started || result.exitCode != 0)
+            if (!result.started || result.exitCode != 0 || !read)
                 return std::nullopt;
             return output;
         }
@@ -427,9 +469,9 @@ namespace BUILD
         {
             const ProcessResult result = runProcess(args, logPath, cwd);
             std::string output;
-            readTextFile(logPath, output);
+            const bool read = readTextFile(logPath, output);
             removeQuiet(logPath);
-            if (!result.started)
+            if (!result.started || !read)
                 return std::nullopt;
             if (output.empty() && result.exitCode != 0)
                 return std::nullopt;
@@ -448,6 +490,47 @@ namespace BUILD
                     return equal;
             }
             return platform::pathTextEquals(pathText(left), pathText(right));
+        }
+
+        bool isWithinDirectory(const Path &base, const Path &candidate)
+        {
+            std::error_code baseError;
+            std::error_code candidateError;
+            const Path normalBase = std::filesystem::weakly_canonical(base, baseError);
+            const Path normalCandidate =
+                std::filesystem::weakly_canonical(candidate, candidateError);
+            const Path &left = baseError ? base : normalBase;
+            const Path &right = candidateError ? candidate : normalCandidate;
+            auto leftPart = left.begin();
+            auto rightPart = right.begin();
+            for (; leftPart != left.end(); ++leftPart, ++rightPart)
+            {
+                if (rightPart == right.end() ||
+                    !platform::pathTextEquals(pathText(*leftPart), pathText(*rightPart)))
+                    return false;
+            }
+            return true;
+        }
+
+        // clean removes fixed names under the build directory. Refuse a build
+        // directory that could contain the project root or its sources.
+        bool safeCleanBuildDir(const Options &options, std::string &error)
+        {
+            if (options.root.empty())
+            {
+                error = "the project root is unknown";
+                return false;
+            }
+            const Path src = options.root / pathFromText("src");
+            if (samePath(options.buildDir, options.root) ||
+                isWithinDirectory(options.buildDir, options.root) ||
+                isWithinDirectory(src, options.buildDir))
+            {
+                error = "refusing to clean '" + pathText(options.buildDir) +
+                        "': it is the project root, an ancestor of it, or inside 'src'";
+                return false;
+            }
+            return true;
         }
 
         std::string exeSuffix()
@@ -496,39 +579,44 @@ namespace BUILD
                    configName(options.config);
         }
 
-        const char *familyName(Family family)
-        {
-            switch (family)
-            {
-            case Family::Clang:
-                return "clang";
-            case Family::Gcc:
-                return "gcc";
-            case Family::Msvc:
-                return "msvc";
-            default:
-                return "unknown";
-            }
-        }
-
         std::string readDefineValue(const Path &header, const std::string &name)
         {
             std::string text;
             if (!readTextFile(header, text))
                 return "unknown";
-            std::size_t position = text.find(name);
-            while (position != std::string::npos)
+            std::istringstream input(text);
+            std::string line;
+            while (std::getline(input, line))
             {
-                const std::size_t equals = text.find('=', position + name.size());
-                if (equals == std::string::npos)
-                    break;
-                const std::size_t firstQuote = text.find('"', equals + 1);
-                if (firstQuote == std::string::npos)
-                    break;
-                const std::size_t secondQuote = text.find('"', firstQuote + 1);
-                if (secondQuote == std::string::npos)
-                    break;
-                return text.substr(firstQuote + 1, secondQuote - firstQuote - 1);
+                std::size_t from = 0;
+                for (;;)
+                {
+                    const std::size_t position = line.find(name, from);
+                    if (position == std::string::npos)
+                        break;
+                    const std::size_t after = position + name.size();
+                    const bool leftOk =
+                        position == 0 || !isIdentifierChar(line[position - 1]);
+                    const bool rightOk = after >= line.size() || !isIdentifierChar(line[after]);
+                    if (!leftOk || !rightOk)
+                    {
+                        from = position + 1;
+                        continue;
+                    }
+                    const std::size_t equals = line.find('=', after);
+                    const std::size_t firstQuote =
+                        equals == std::string::npos ? std::string::npos
+                                                    : line.find('"', equals + 1);
+                    const std::size_t secondQuote =
+                        firstQuote == std::string::npos ? std::string::npos
+                                                        : line.find('"', firstQuote + 1);
+                    if (secondQuote == std::string::npos)
+                    {
+                        from = position + 1;
+                        continue;
+                    }
+                    return line.substr(firstQuote + 1, secondQuote - firstQuote - 1);
+                }
             }
             return "unknown";
         }
@@ -539,10 +627,11 @@ namespace BUILD
 
         std::string readDevShellArch()
         {
-            const char *value = std::getenv("VSCMD_ARG_TGT_ARCH");
-            if (value == nullptr || *value == '\0')
+            const std::optional<std::string> value =
+                platform::environmentValue("VSCMD_ARG_TGT_ARCH");
+            if (!value || value->empty())
                 return std::string();
-            std::string arch = lowerAscii(trimText(value));
+            std::string arch = lowerAscii(trimText(*value));
             if (arch == "amd64" || arch == "x86_64")
                 arch = "x64";
             else if (arch == "win32" || arch == "i386" || arch == "i686")
@@ -575,6 +664,8 @@ namespace BUILD
         using platform::pathText;
         using platform::reexecInDevShell;
 
+        std::string msvcTriple(Arch arch);
+
         bool discoverToolchain(const Options &options, const Path &logsDir, Toolchain &toolchain,
                                std::string &error)
         {
@@ -585,29 +676,42 @@ namespace BUILD
                 return false;
             }
 
+            const bool wantsMsvc =
+                options.compiler == CompilerChoice::Msvc ||
+                (!options.cxx.empty() &&
+                 (lowerAscii(pathText(options.cxx.filename())) == "cl" ||
+                  lowerAscii(pathText(options.cxx.filename())) == "cl.exe"));
+            if (wantsMsvc && !platform::supportsMsvc())
+            {
+                error = "MSVC is only supported on Windows";
+                return false;
+            }
+
             std::vector<std::string> candidates;
             if (!options.cxx.empty())
             {
                 candidates.push_back(pathText(options.cxx));
             }
-            else
+            else if (options.compiler == CompilerChoice::Auto)
             {
-                const char *environment = std::getenv("MOTEVM_CXX");
-                if (environment != nullptr && *environment != '\0')
-                    candidates.push_back(environment);
-                environment = std::getenv("CXX");
-                if (environment != nullptr && *environment != '\0')
-                    candidates.push_back(environment);
-                if (options.compiler == CompilerChoice::Auto ||
-                    options.compiler == CompilerChoice::Clang)
-                    candidates.push_back("clang++");
-                if (options.compiler == CompilerChoice::Auto ||
-                    options.compiler == CompilerChoice::Gcc)
-                    candidates.push_back("g++");
-                if (options.compiler == CompilerChoice::Auto ||
-                    options.compiler == CompilerChoice::Msvc)
+                const std::optional<std::string> environment =
+                    platform::environmentValue("MOTEVM_CXX");
+                if (environment && !environment->empty())
+                    candidates.push_back(*environment);
+                const std::optional<std::string> cxx = platform::environmentValue("CXX");
+                if (cxx && !cxx->empty())
+                    candidates.push_back(*cxx);
+                candidates.push_back("clang++");
+                candidates.push_back("g++");
+                if (platform::supportsMsvc())
                     candidates.push_back("cl");
             }
+            else if (options.compiler == CompilerChoice::Clang)
+                candidates.push_back("clang++");
+            else if (options.compiler == CompilerChoice::Gcc)
+                candidates.push_back("g++");
+            else if (options.compiler == CompilerChoice::Msvc)
+                candidates.push_back("cl");
 
             std::optional<Path> compiler;
             for (const std::string &candidate : candidates)
@@ -637,6 +741,9 @@ namespace BUILD
                 return false;
             }
             toolchain.cxx = *compiler;
+            const FileDigest cxxDigest = digestFile(toolchain.cxx);
+            if (cxxDigest.ok)
+                toolchain.cxxDigest = cxxDigest.hash;
 
             const std::string baseName = lowerAscii(pathText(toolchain.cxx.filename()));
             if (baseName == "cl.exe" || baseName == "cl")
@@ -670,8 +777,7 @@ namespace BUILD
                     else if (lowered.find("x86") != std::string::npos)
                         toolchain.devShellArch = "x86";
                 }
-                toolchain.triple = toolchain.arch == Arch::X86 ? "i686-pc-windows-msvc"
-                                                               : "x86_64-pc-windows-msvc";
+                toolchain.triple = msvcTriple(toolchain.arch);
                 const std::optional<Path> linker = findExecutable("link");
                 if (!linker)
                 {
@@ -679,6 +785,9 @@ namespace BUILD
                     return false;
                 }
                 toolchain.linker = *linker;
+                const FileDigest linkerDigest = digestFile(toolchain.linker);
+                if (linkerDigest.ok)
+                    toolchain.linkerDigest = linkerDigest.hash;
                 return true;
             }
 
@@ -723,8 +832,7 @@ namespace BUILD
             toolchain.arch = resolveArch(options.arch);
             toolchain.devShellArch = readDevShellArch();
             if (toolchain.family == Family::Clang && toolchain.msvcAbi)
-                toolchain.triple = toolchain.arch == Arch::X86 ? "i686-pc-windows-msvc"
-                                                               : "x86_64-pc-windows-msvc";
+                toolchain.triple = msvcTriple(toolchain.arch);
 
             if (toolchain.family == Family::Gcc && toolchain.arch == Arch::X86)
             {
@@ -747,11 +855,17 @@ namespace BUILD
                 }
             }
 
+            toolchain.linkerDigest = toolchain.cxxDigest;
             if (toolchain.msvcAbi)
             {
                 const std::optional<Path> lld = findExecutable("lld-link");
                 if (lld)
+                {
                     toolchain.lldLink = *lld;
+                    const FileDigest lldDigest = digestFile(*lld);
+                    if (lldDigest.ok)
+                        toolchain.linkerDigest = lldDigest.hash;
+                }
             }
             return true;
         }
@@ -773,33 +887,72 @@ namespace BUILD
             return true;
         }
 
-        void collectModuleSources(const Path &directory, const Path &moduleInclude,
-                                  std::vector<Path> &sources)
+        bool listDirectoryEntries(const Path &directory, std::vector<Path> &entries,
+                                  std::error_code &error)
+        {
+            std::filesystem::directory_iterator it(directory, error);
+            const std::filesystem::directory_iterator end;
+            for (; !error && it != end; it.increment(error))
+                entries.push_back(it->path());
+            return !error;
+        }
+
+        bool collectModuleSources(const Path &directory, std::vector<Path> &sources,
+                                  std::string &error)
         {
             std::error_code ec;
             std::vector<Path> entries;
-            for (const std::filesystem::directory_entry &entry :
-                 std::filesystem::directory_iterator(directory, ec))
+            if (!listDirectoryEntries(directory, entries, ec))
             {
-                if (ec)
-                    break;
-                entries.push_back(entry.path());
+                error = "cannot scan '" + pathText(directory) + "': " + ec.message();
+                return false;
             }
             std::sort(entries.begin(), entries.end(),
                       [](const Path &left, const Path &right)
                       { return pathText(left) < pathText(right); });
             for (const Path &entry : entries)
             {
-                if (directoryExists(entry))
+                std::error_code statusError;
+                const std::filesystem::file_status status =
+                    std::filesystem::symlink_status(entry, statusError);
+                if (statusError)
                 {
-                    if (samePath(entry, moduleInclude))
-                        continue;
-                    collectModuleSources(entry, moduleInclude, sources);
+                    error = "cannot inspect '" + pathText(entry) + "': " +
+                            statusError.message();
+                    return false;
+                }
+                if (std::filesystem::is_symlink(status))
+                {
+                    // Follow only file symlinks; directory symlinks are skipped
+                    // so a loop cannot recurse forever or escape the module.
+                    std::error_code targetError;
+                    const std::filesystem::file_status target =
+                        std::filesystem::status(entry, targetError);
+                    if (targetError)
+                    {
+                        error = "cannot inspect '" + pathText(entry) + "': " +
+                                targetError.message();
+                        return false;
+                    }
+                    if (std::filesystem::is_regular_file(target) &&
+                        lowerAscii(pathText(entry.extension())) == ".cpp")
+                        sources.push_back(entry);
                     continue;
                 }
-                if (lowerAscii(pathText(entry.extension())) == ".cpp")
+                if (std::filesystem::is_directory(status))
+                {
+                    // Match CMake's case-sensitive `[/\\]include[/\\]` filter.
+                    if (pathText(entry.filename()) == "include")
+                        continue;
+                    if (!collectModuleSources(entry, sources, error))
+                        return false;
+                    continue;
+                }
+                if (std::filesystem::is_regular_file(status) &&
+                    lowerAscii(pathText(entry.extension())) == ".cpp")
                     sources.push_back(entry);
             }
+            return true;
         }
 
         std::string readProjectValue(const Path &root, const std::string &name)
@@ -813,14 +966,9 @@ namespace BUILD
 
         Path selfOutputPath(const Options &options, const Path &buildDir)
         {
-            std::error_code ec;
-            if (!options.currentExe.empty())
-            {
-                const Path relative = std::filesystem::relative(options.currentExe, buildDir, ec);
-                const std::string relativeText = pathText(relative);
-                if (!ec && !relativeText.empty() && relativeText.rfind("..", 0) != 0)
-                    return options.currentExe;
-            }
+            if (!options.currentExe.empty() &&
+                isWithinDirectory(buildDir, options.currentExe))
+                return options.currentExe;
             return buildDir / "bin" / pathFromText(std::string(TARGET_BUILDER) + exeSuffix());
         }
 
@@ -840,16 +988,32 @@ namespace BUILD
                 return false;
             }
             const Path sharedInclude = srcRoot / pathFromText("include");
-            std::vector<Path> entries;
+            std::vector<Path> rawEntries;
             std::error_code ec;
-            for (const std::filesystem::directory_entry &entry :
-                 std::filesystem::directory_iterator(srcRoot, ec))
+            if (!listDirectoryEntries(srcRoot, rawEntries, ec))
             {
-                if (ec)
+                error = "cannot scan '" + pathText(srcRoot) + "': " + ec.message();
+                return false;
+            }
+            std::vector<Path> entries;
+            for (const Path &path : rawEntries)
+            {
+                std::error_code statusError;
+                const std::filesystem::file_status status =
+                    std::filesystem::symlink_status(path, statusError);
+                if (statusError)
+                {
+                    ec = statusError;
                     break;
-                std::error_code typeError;
-                if (entry.is_directory(typeError))
-                    entries.push_back(entry.path());
+                }
+                // Only real directories: directory symlinks are not modules.
+                if (std::filesystem::is_directory(status))
+                    entries.push_back(path);
+            }
+            if (ec)
+            {
+                error = "cannot scan '" + pathText(srcRoot) + "': " + ec.message();
+                return false;
             }
             std::sort(entries.begin(), entries.end(),
                       [](const Path &left, const Path &right)
@@ -918,6 +1082,12 @@ namespace BUILD
                             "' must be lowercase [a-z][a-z0-9_]* and not 'all'";
                     return false;
                 }
+                if (name == TARGET_CORE || name == TARGET_TOOLS)
+                {
+                    error = "module directory '" + pathText(directory) +
+                            "' collides with the shared target '" + name + "'";
+                    return false;
+                }
                 const Path mainFile = directory / pathFromText(name + ".cpp");
                 if (!fileExists(mainFile))
                 {
@@ -928,8 +1098,8 @@ namespace BUILD
                 Target target;
                 target.name = name;
                 target.mainFile = mainFile;
-                collectModuleSources(directory, directory / pathFromText("include"),
-                                     target.sources);
+                if (!collectModuleSources(directory, target.sources, error))
+                    return false;
                 if (target.sources.empty())
                 {
                     error = "module '" + name + "' contains no .cpp files";
@@ -1177,31 +1347,33 @@ namespace BUILD
             return relative;
         }
 
+        Path privatePath(const Options &options, const Toolchain &toolchain, const char *subdir,
+                         const Target &target, const Path &root, const Path &source,
+                         const char *suffix)
+        {
+            Path path = privateRoot(options, toolchain) / pathFromText(subdir) /
+                        pathFromText(target.name) / projectRelative(root, source);
+            // Append rather than replace: foo.cpp and foo.CPP must not collide.
+            path += pathFromText(suffix);
+            return path;
+        }
+
         Path objectPath(const Options &options, const Toolchain &toolchain, const Target &target,
                         const Path &root, const Path &source)
         {
-            Path object = privateRoot(options, toolchain) / "obj" / pathFromText(target.name) /
-                          projectRelative(root, source);
-            object.replace_extension(".obj");
-            return object;
+            return privatePath(options, toolchain, "obj", target, root, source, ".obj");
         }
 
         Path depPath(const Options &options, const Toolchain &toolchain, const Target &target,
                      const Path &root, const Path &source)
         {
-            Path dep = privateRoot(options, toolchain) / "dep" / pathFromText(target.name) /
-                       projectRelative(root, source);
-            dep.replace_extension(".d");
-            return dep;
+            return privatePath(options, toolchain, "dep", target, root, source, ".d");
         }
 
         Path statePath(const Options &options, const Toolchain &toolchain, const Target &target,
                        const Path &root, const Path &source)
         {
-            Path state = privateRoot(options, toolchain) / "state" / pathFromText(target.name) /
-                         projectRelative(root, source);
-            state.replace_extension(".state");
-            return state;
+            return privatePath(options, toolchain, "state", target, root, source, ".state");
         }
 
         // ============================================================================
@@ -1232,6 +1404,7 @@ namespace BUILD
             std::istringstream input(text);
             std::string line;
             bool headerSeen = false;
+            bool valid = true;
             while (std::getline(input, line))
             {
                 if (!line.empty() && line.back() == '\r')
@@ -1248,10 +1421,10 @@ namespace BUILD
                 std::istringstream fields(line);
                 std::string key;
                 fields >> key;
-                if (!key.empty())
-                    handler(key, fields);
+                if (!key.empty() && !handler(key, fields))
+                    valid = false;
             }
-            return headerSeen;
+            return headerSeen && valid;
         }
 
         ObjectState loadObjectState(const Path &file)
@@ -1268,37 +1441,41 @@ namespace BUILD
                     if (key == "cxx")
                     {
                         std::string token;
-                        if (fields >> token && parseHex64(token, state.cxxHash))
-                            seenCxx = true;
+                        if (!(fields >> token) || !parseHex64(token, state.cxxHash))
+                            return false;
+                        seenCxx = true;
                     }
                     else if (key == "flags")
                     {
                         std::string token;
-                        if (fields >> token && parseHex64(token, state.flagsHash))
-                            seenFlags = true;
+                        if (!(fields >> token) || !parseHex64(token, state.flagsHash))
+                            return false;
+                        seenFlags = true;
                     }
                     else if (key == "source")
                     {
                         std::string token;
-                        if (fields >> token >> state.sourceSize &&
-                            parseHex64(token, state.sourceHash))
-                            seenSource = true;
+                        if (!(fields >> token >> state.sourceSize) ||
+                            !parseHex64(token, state.sourceHash))
+                            return false;
+                        seenSource = true;
                     }
                     else if (key == "deps-known")
                     {
                         std::string value;
-                        if (fields >> value)
-                        {
-                            state.depsKnown = value == "yes";
-                            seenDepsKnown = true;
-                        }
+                        if (!(fields >> value))
+                            return false;
+                        state.depsKnown = value == "yes";
+                        seenDepsKnown = true;
                     }
                     else if (key == "dep")
                     {
                         DepDigest dep;
-                        if (readDigestLine(fields, dep))
-                            state.deps.push_back(std::move(dep));
+                        if (!readDigestLine(fields, dep))
+                            return false;
+                        state.deps.push_back(std::move(dep));
                     }
+                    return true;
                 });
             state.valid = header && seenCxx && seenFlags && seenSource && seenDepsKnown;
             return state;
@@ -1333,22 +1510,26 @@ namespace BUILD
                     if (key == "args")
                     {
                         std::string token;
-                        if (fields >> token && parseHex64(token, state.argsHash))
-                            seenArgs = true;
+                        if (!(fields >> token) || !parseHex64(token, state.argsHash))
+                            return false;
+                        seenArgs = true;
                     }
                     else if (key == "output")
                     {
                         std::string token;
-                        if (fields >> token >> state.outputSize &&
-                            parseHex64(token, state.outputHash))
-                            seenOutput = true;
+                        if (!(fields >> token >> state.outputSize) ||
+                            !parseHex64(token, state.outputHash))
+                            return false;
+                        seenOutput = true;
                     }
                     else if (key == "in")
                     {
                         DepDigest inputFile;
-                        if (readDigestLine(fields, inputFile))
-                            state.inputs.push_back(std::move(inputFile));
+                        if (!readDigestLine(fields, inputFile))
+                            return false;
+                        state.inputs.push_back(std::move(inputFile));
                     }
+                    return true;
                 });
             state.valid = header && seenArgs && seenOutput;
             return state;
@@ -1436,7 +1617,16 @@ namespace BUILD
                 return dependencies;
 
             known = true;
-            for (std::size_t i = 1; i < tokens.size(); ++i)
+            std::size_t firstDependency = 1;
+            for (std::size_t i = 0; i < tokens.size(); ++i)
+            {
+                if (!tokens[i].empty() && tokens[i].back() == ':')
+                {
+                    firstDependency = i + 1;
+                    break;
+                }
+            }
+            for (std::size_t i = firstDependency; i < tokens.size(); ++i)
             {
                 std::string token = tokens[i];
                 if (!token.empty() && token.back() == ':')
@@ -1450,6 +1640,27 @@ namespace BUILD
             }
             return dependencies;
         }
+        bool rawStringPrefix(const std::string &line, std::size_t position)
+        {
+            if (position == 0)
+                return true;
+            const char before = line[position - 1];
+            if (!isIdentifierChar(before))
+                return true;
+            if (before == 'L' || before == 'u' || before == 'U')
+            {
+                if (position == 1 || !isIdentifierChar(line[position - 2]))
+                    return true;
+                if (before == 'u' && line[position - 2] == '8' &&
+                    (position == 2 || !isIdentifierChar(line[position - 3])))
+                    return true;
+            }
+            if (before == '8' && position >= 2 && line[position - 2] == 'u' &&
+                (position == 2 || !isIdentifierChar(line[position - 3])))
+                return true;
+            return false;
+        }
+
         bool scanIncludes(const Path &file, const std::vector<Path> &includes,
                           std::unordered_set<std::string> &visited, std::vector<Path> &out)
         {
@@ -1465,6 +1676,8 @@ namespace BUILD
 
             bool complete = true;
             bool inBlockComment = false;
+            bool inRawString = false;
+            std::string rawDelimiter;
             std::istringstream input(text);
             std::string line;
             while (std::getline(input, line))
@@ -1483,12 +1696,58 @@ namespace BUILD
                         }
                         continue;
                     }
+                    if (inRawString)
+                    {
+                        if (c == ')' && i + 1 + rawDelimiter.size() < line.size() &&
+                            line.compare(i + 1, rawDelimiter.size(), rawDelimiter) == 0 &&
+                            line[i + 1 + rawDelimiter.size()] == '"')
+                        {
+                            inRawString = false;
+                            i += 1 + rawDelimiter.size();
+                        }
+                        continue;
+                    }
                     if (c == '/' && i + 1 < line.size() && line[i + 1] == '/')
                         break;
                     if (c == '/' && i + 1 < line.size() && line[i + 1] == '*')
                     {
                         inBlockComment = true;
                         ++i;
+                        continue;
+                    }
+                    if (c == '"' || c == '\'')
+                    {
+                        const char quote = c;
+                        bool closed = false;
+                        for (++i; i < line.size(); ++i)
+                        {
+                            if (line[i] == '\\')
+                            {
+                                ++i;
+                                continue;
+                            }
+                            if (line[i] == quote)
+                            {
+                                closed = true;
+                                break;
+                            }
+                        }
+                        if (!closed)
+                            complete = false;
+                        continue;
+                    }
+                    if (c == 'R' && i + 1 < line.size() && line[i + 1] == '"' &&
+                        rawStringPrefix(line, i))
+                    {
+                        const std::size_t open = line.find('(', i + 2);
+                        if (open == std::string::npos || open - (i + 2) > 16)
+                        {
+                            complete = false;
+                            break;
+                        }
+                        rawDelimiter = line.substr(i + 2, open - (i + 2));
+                        inRawString = true;
+                        i = open;
                         continue;
                     }
                     cleaned.push_back(c);
@@ -1507,16 +1766,26 @@ namespace BUILD
                 while (cursor < cleaned.size() &&
                        (cleaned[cursor] == ' ' || cleaned[cursor] == '\t'))
                     ++cursor;
-                if (cursor >= cleaned.size())
+                if (cursor >= cleaned.size() || cleaned[cursor] == '\\')
+                {
+                    // Macro include or continuation: cannot resolve statically.
+                    complete = false;
                     continue;
+                }
                 const char opener = cleaned[cursor];
                 if (opener != '"' && opener != '<')
+                {
+                    complete = false;
                     continue;
+                }
                 const char closer = opener == '"' ? '"' : '>';
                 const std::size_t first = cursor + 1;
                 const std::size_t last = cleaned.find(closer, first);
                 if (last == std::string::npos)
+                {
+                    complete = false;
                     continue;
+                }
                 const std::string name = cleaned.substr(first, last - first);
                 const bool angleInclude = opener == '<';
 
@@ -1552,6 +1821,8 @@ namespace BUILD
                 if (!scanIncludes(resolved, includes, visited, out))
                     complete = false;
             }
+            if (inBlockComment || inRawString)
+                complete = false;
             return complete;
         }
 
@@ -1607,6 +1878,12 @@ namespace BUILD
             return true;
         }
 
+        bool digestMatches(const Path &path, std::uint64_t hash, std::uint64_t size)
+        {
+            const FileDigest digest = digestFile(path);
+            return digest.ok && digest.hash == hash && digest.size == size;
+        }
+
         bool objectUpToDate(const CompileUnit &unit, std::string &reason)
         {
             if (!fileExists(unit.object))
@@ -1635,17 +1912,14 @@ namespace BUILD
                 reason = "flags changed";
                 return false;
             }
-            const FileDigest source = digestFile(unit.source);
-            if (!source.ok || source.hash != state.sourceHash || source.size != state.sourceSize)
+            if (!digestMatches(unit.source, state.sourceHash, state.sourceSize))
             {
                 reason = "source changed";
                 return false;
             }
             for (const DepDigest &dependency : state.deps)
             {
-                const FileDigest digest = digestFile(dependency.path);
-                if (!digest.ok || digest.hash != dependency.hash ||
-                    digest.size != dependency.size)
+                if (!digestMatches(dependency.path, dependency.hash, dependency.size))
                 {
                     reason = "dependency changed";
                     return false;
@@ -1673,9 +1947,7 @@ namespace BUILD
                 reason = "command line changed";
                 return false;
             }
-            const FileDigest outputDigest = digestFile(output);
-            if (!outputDigest.ok || outputDigest.hash != state.outputHash ||
-                outputDigest.size != state.outputSize)
+            if (!digestMatches(output, state.outputHash, state.outputSize))
             {
                 reason = "output changed";
                 return false;
@@ -1696,9 +1968,7 @@ namespace BUILD
                     reason = "input set changed";
                     return false;
                 }
-                const FileDigest digest = digestFile(input);
-                if (!digest.ok || digest.hash != found->second.hash ||
-                    digest.size != found->second.size)
+                if (!digestMatches(input, found->second.hash, found->second.size))
                 {
                     reason = "input changed";
                     return false;
@@ -1733,11 +2003,8 @@ namespace BUILD
             }
             if (found == nullptr)
                 return false;
-            for (const Target *existing : selected)
-            {
-                if (existing == found)
-                    return true;
-            }
+            if (std::find(selected.begin(), selected.end(), found) != selected.end())
+                return true;
             selected.push_back(found);
             return true;
         }
@@ -1745,9 +2012,8 @@ namespace BUILD
         bool addTargetClosure(const Project &project, const Target &target,
                               std::vector<const Target *> &targets, std::string &error)
         {
-            for (const Target *existing : targets)
-                if (existing->name == target.name)
-                    return true;
+            if (std::find(targets.begin(), targets.end(), &target) != targets.end())
+                return true;
             targets.push_back(&target);
             for (const std::string &link : target.links)
             {
@@ -1806,24 +2072,37 @@ namespace BUILD
                                : Path();
             unit.stateFile = statePath(options, toolchain, target, project.root, source);
             unit.display = displayPath(source, project.root);
-            unit.logFile =
-                privateRoot(options, toolchain) / "logs" /
-                pathFromText("compile-" + sanitizeForFile(target.name + "-" + unit.display) +
-                             ".log");
-            if (!ensureDirectory(unit.object.parent_path(), error) ||
-                !ensureDirectory(unit.stateFile.parent_path(), error) ||
-                !ensureDirectory(unit.logFile.parent_path(), error))
-                return false;
-            if (!unit.depFile.empty() && !ensureDirectory(unit.depFile.parent_path(), error))
-                return false;
+            std::string logStem = sanitizeForFile(target.name + "-" + unit.display);
+            if (logStem.size() > 80)
+                logStem.resize(80);
+            unit.logFile = privateRoot(options, toolchain) / "logs" /
+                           pathFromText("compile-" + logStem + "-" +
+                                        hex64(hashText(unit.display)) + ".log");
+            if (!options.dryRun)
+            {
+                if (!ensureDirectory(unit.object.parent_path(), error) ||
+                    !ensureDirectory(unit.stateFile.parent_path(), error) ||
+                    !ensureDirectory(unit.logFile.parent_path(), error))
+                    return false;
+                if (!unit.depFile.empty() &&
+                    !ensureDirectory(unit.depFile.parent_path(), error))
+                    return false;
+            }
             unit.args = compileArguments(options, toolchain, target, unit);
-            unit.cxxHash = hashText(pathText(toolchain.cxx) + "\n" + toolchain.versionLine + "\n" +
-                                    toolchain.triple + "\n" + archName(toolchain.arch));
+            unit.cxxHash =
+                hashText(pathText(toolchain.cxx) + "\n" + toolchain.versionLine + "\n" +
+                         toolchain.triple + "\n" + archName(toolchain.arch) + "\n" +
+                         hex64(toolchain.cxxDigest));
             std::vector<std::string> signature = compileFlags(options, toolchain);
             for (const Path &include : target.includes)
                 signature.push_back("-I" + pathText(include));
             unit.flagsHash = hashArgs(signature);
             return true;
+        }
+
+        bool isUserTarget(const Target &target)
+        {
+            return !target.internal && target.name != TARGET_BUILDER;
         }
 
         int selectTargets(const Project &project, const Options &options,
@@ -1841,7 +2120,7 @@ namespace BUILD
                 {
                     for (const Target &target : project.targets)
                     {
-                        if (!target.internal && target.name != TARGET_BUILDER)
+                        if (isUserTarget(target))
                             addTargetByName(project, target.name, selected);
                     }
                     continue;
@@ -1909,9 +2188,8 @@ namespace BUILD
                                 const Project &project, const Target &target,
                                 std::vector<Path> &objects, std::vector<std::string> &seen)
         {
-            for (const std::string &name : seen)
-                if (name == target.name)
-                    return;
+            if (std::find(seen.begin(), seen.end(), target.name) != seen.end())
+                return;
             seen.push_back(target.name);
             for (const Path &source : target.sources)
                 objects.push_back(objectPath(options, toolchain, target, project.root, source));
@@ -1949,14 +2227,22 @@ namespace BUILD
                 step.inputs = objects;
                 step.args = linkArguments(options, toolchain, step.output, objects);
                 step.argsHash = hashArgs(step.args);
+                if (toolchain.linkerDigest != 0)
+                {
+                    step.argsHash ^= toolchain.linkerDigest;
+                    step.argsHash *= FNV_PRIME;
+                }
                 step.stateFile = stateDir / pathFromText(target->name + ".link.state");
                 step.logFile = logsDir / pathFromText(target->name + "-link.log");
 
-                std::string error;
-                if (!ensureDirectory(step.output.parent_path(), error))
+                if (!options.dryRun)
                 {
-                    std::cerr << "error: " << error << "\n";
-                    return ENVIRONMENT;
+                    std::string error;
+                    if (!ensureDirectory(step.output.parent_path(), error))
+                    {
+                        std::cerr << "error: " << error << "\n";
+                        return ENVIRONMENT;
+                    }
                 }
                 std::string reason;
                 const Path &checkedOutput = step.replaceSelf ? step.finalOutput : step.output;
@@ -2019,42 +2305,59 @@ namespace BUILD
             std::atomic<bool> failed{false};
             std::mutex outputMutex;
 
+            const auto fail = [&](std::string message)
+            {
+                std::lock_guard<std::mutex> lock(outputMutex);
+                if (!failed.exchange(true))
+                    firstError = std::move(message);
+            };
+
+            // Caller must hold outputMutex.
+            const auto reportCompile = [&](const CompileUnit &unit)
+            {
+                const int doneIndex = completed.fetch_add(1) + 1;
+                std::cout << "[" << doneIndex << "/" << workCount << "] CXX   "
+                          << unit.display << "\n";
+            };
+
             const auto worker = [&]()
             {
-                for (;;)
+                try
                 {
-                    if (failed.load())
-                        return;
-                    const std::size_t index = nextUnit.fetch_add(1);
-                    if (index >= units.size())
-                        return;
-                    CompileUnit &unit = units[index];
-                    if (!unit.needsBuild)
-                        continue;
-
-                    if (options.dryRun)
+                    for (;;)
                     {
-                        std::lock_guard<std::mutex> lock(outputMutex);
-                        unit.built = true;
-                        const int doneIndex = completed.fetch_add(1) + 1;
-                        std::cout << "[" << doneIndex << "/" << workCount << "] CXX   "
-                                  << unit.display << "\n";
-                        std::cout << "        " << formatCommand(unit.args) << "\n";
-                        std::cout.flush();
-                        continue;
-                    }
+                        if (failed.load())
+                            return;
+                        const std::size_t index = nextUnit.fetch_add(1);
+                        if (index >= units.size())
+                            return;
+                        CompileUnit &unit = units[index];
+                        if (!unit.needsBuild)
+                            continue;
 
-                    const ProcessResult result =
-                        runProcess(unit.args, unit.logFile, project.root);
-                    if (!result.started || result.exitCode != 0)
-                    {
-                        removeQuiet(unit.object);
-                        removeQuiet(unit.stateFile);
-                        std::string log;
-                        readTextFile(unit.logFile, log);
-                        std::lock_guard<std::mutex> lock(outputMutex);
-                        if (!failed.exchange(true))
+                        if (options.dryRun)
                         {
+                            std::lock_guard<std::mutex> lock(outputMutex);
+                            unit.built = true;
+                            reportCompile(unit);
+                            std::cout << "        " << formatCommand(unit.args) << "\n";
+                            std::cout.flush();
+                            continue;
+                        }
+
+                        // Drop the previous state before compiling: a crash in
+                        // the child must not leave a state file that blesses a
+                        // partially written object.
+                        removeQuiet(unit.stateFile);
+                        const FileDigest sourceBefore = digestFile(unit.source);
+                        const ProcessResult result =
+                            runProcess(unit.args, unit.logFile, project.root);
+                        if (!result.started || result.exitCode != 0)
+                        {
+                            removeQuiet(unit.object);
+                            removeQuiet(unit.stateFile);
+                            std::string log;
+                            readTextFile(unit.logFile, log);
                             std::ostringstream report;
                             report << "error: compiling '" << unit.display << "' failed";
                             if (!result.started)
@@ -2064,30 +2367,51 @@ namespace BUILD
                             report << "\n";
                             if (!log.empty())
                                 report << log << (log.back() == '\n' ? "" : "\n");
-                            firstError = report.str();
+                            fail(report.str());
+                            return;
                         }
-                        return;
-                    }
+                        if (!fileExists(unit.object))
+                        {
+                            removeQuiet(unit.stateFile);
+                            fail("error: compiling '" + unit.display +
+                                 "' did not produce '" + pathText(unit.object) + "'\n");
+                            return;
+                        }
 
-                    ObjectState state;
-                    std::string stateError;
-                    bool stateOk =
-                        makeObjectState(unit, project.root, state, stateError);
-                    if (stateOk)
-                        stateOk = saveObjectState(unit.stateFile, state, stateError);
-                    if (!stateOk)
-                    {
-                        removeQuiet(unit.stateFile);
+                        ObjectState state;
+                        std::string stateError;
+                        bool stateOk =
+                            makeObjectState(unit, project.root, state, stateError);
+                        if (stateOk && sourceBefore.ok &&
+                            (sourceBefore.hash != state.sourceHash ||
+                             sourceBefore.size != state.sourceSize))
+                        {
+                            removeQuiet(unit.stateFile);
+                            stateOk = false;
+                            stateError = "source changed during compilation; state not saved";
+                        }
+                        if (stateOk)
+                            stateOk = saveObjectState(unit.stateFile, state, stateError);
+                        if (!stateOk)
+                        {
+                            removeQuiet(unit.stateFile);
+                            std::lock_guard<std::mutex> lock(outputMutex);
+                            std::cerr << "warning: " << stateError << "\n";
+                        }
+                        unit.built = true;
+
                         std::lock_guard<std::mutex> lock(outputMutex);
-                        std::cerr << "warning: " << stateError << "\n";
+                        reportCompile(unit);
+                        std::cout.flush();
                     }
-                    unit.built = true;
-
-                    std::lock_guard<std::mutex> lock(outputMutex);
-                    const int doneIndex = completed.fetch_add(1) + 1;
-                    std::cout << "[" << doneIndex << "/" << workCount << "] CXX   "
-                              << unit.display << "\n";
-                    std::cout.flush();
+                }
+                catch (const std::exception &error)
+                {
+                    fail("error: compile worker failed: " + std::string(error.what()) + "\n");
+                }
+                catch (...)
+                {
+                    fail("error: compile worker failed\n");
                 }
             };
 
@@ -2100,12 +2424,11 @@ namespace BUILD
             }
             else
             {
-                std::vector<std::thread> threads;
+                // jthread joins on scope exit, including stack unwinding.
+                std::vector<std::jthread> threads;
                 threads.reserve(static_cast<std::size_t>(threadCount));
                 for (int i = 0; i < threadCount; ++i)
                     threads.emplace_back(worker);
-                for (std::thread &thread : threads)
-                    thread.join();
             }
             return !failed.load();
         }
@@ -2137,6 +2460,7 @@ namespace BUILD
                     runProcess(step.args, step.logFile, project.root);
                 if (!result.started || result.exitCode != 0)
                 {
+                    removeQuiet(step.output);
                     std::string log;
                     readTextFile(step.logFile, log);
                     std::cerr << "error: linking '" << step.display << "' failed";
@@ -2223,12 +2547,15 @@ namespace BUILD
             }
 
             const Path logsDir = privateRoot(options, toolchain) / "logs";
-            std::string setupError;
-            if (!ensureDirectory(logsDir, setupError) ||
-                !ensureDirectory(buildRoot(options, toolchain) / "bin", setupError))
+            if (!options.dryRun)
             {
-                std::cerr << "error: " << setupError << "\n";
-                return ENVIRONMENT;
+                std::string setupError;
+                if (!ensureDirectory(logsDir, setupError) ||
+                    !ensureDirectory(buildRoot(options, toolchain) / "bin", setupError))
+                {
+                    std::cerr << "error: " << setupError << "\n";
+                    return ENVIRONMENT;
+                }
             }
 
             std::vector<CompileUnit> units;
@@ -2297,23 +2624,31 @@ namespace BUILD
             std::filesystem::rename(fresh, destination, ec);
             if (ec)
             {
+                const std::string installError = ec.message();
+                bool restoreAttempted = false;
                 std::error_code restoreError;
                 if (fileExists(backup))
+                {
+                    restoreAttempted = true;
                     std::filesystem::rename(backup, destination, restoreError);
+                }
                 error = "cannot install the new executable ('" + pathText(destination) +
-                        "': " + ec.message() + ")";
+                        "': " + installError + ")";
+                if (restoreAttempted && restoreError)
+                    error += "; restoring the previous executable failed ('" +
+                             pathText(backup) + "': " + restoreError.message() +
+                             "); the destination no longer exists";
                 return false;
             }
             std::filesystem::remove(backup, ec);
             return true;
         }
 
-        void configureTempDirectory(const Path &tempDir)
+        bool configureTempDirectory(const Path &tempDir, std::string &error)
         {
-            std::string error;
             if (!ensureDirectory(tempDir, error))
-                return;
-            platform::setTempEnvironment(tempDir);
+                return false;
+            return platform::setTempEnvironment(tempDir, error);
         }
 
         bool usesMsvcCompiler(const Options &options)
@@ -2330,18 +2665,38 @@ namespace BUILD
 
         int runClean(const Options &options)
         {
+            std::string safetyError;
+            if (!safeCleanBuildDir(options, safetyError))
+            {
+                std::cerr << "error: " << safetyError << "\n";
+                return USAGE;
+            }
+
             int removed = 0;
             std::error_code ec;
-            const auto removeTree = [&](const Path &path)
+            const auto removePath = [&](const Path &path)
             {
-                if (!directoryExists(path))
+                std::error_code statusError;
+                const std::filesystem::file_status status =
+                    std::filesystem::symlink_status(path, statusError);
+                if (statusError)
+                {
+                    if (statusError !=
+                        std::make_error_condition(std::errc::no_such_file_or_directory))
+                        ec = statusError;
                     return;
-                std::error_code treeError;
-                std::filesystem::remove_all(path, treeError);
-                if (!treeError)
+                }
+                if (!std::filesystem::exists(status))
+                    return;
+                std::error_code removeError;
+                if (std::filesystem::is_directory(status))
+                    std::filesystem::remove_all(path, removeError);
+                else
+                    std::filesystem::remove(path, removeError);
+                if (!removeError)
                     ++removed;
                 else
-                    ec = treeError;
+                    ec = removeError;
             };
             static const char *toolchains[] = {"clang", "gcc", "msvc"};
             static const char *architectures[] = {"x86", "x64"};
@@ -2349,12 +2704,12 @@ namespace BUILD
             for (const char *toolchain : toolchains)
                 for (const char *architecture : architectures)
                     for (const char *configuration : configurations)
-                        removeTree(options.buildDir / pathFromText(std::string(toolchain) + "-" +
+                        removePath(options.buildDir / pathFromText(std::string(toolchain) + "-" +
                                                                    architecture + "-" +
                                                                    configuration));
             // Legacy private tree from the previous single-target builder.
-            removeTree(options.buildDir / pathFromText(TARGET_BUILDER));
-            removeTree(options.buildDir / ".builder");
+            removePath(options.buildDir / pathFromText(TARGET_BUILDER));
+            removePath(options.buildDir / ".builder");
             removeQuiet(options.buildDir / "reexec-x86.cmd");
             removeQuiet(options.buildDir / "reexec-x64.cmd");
             if (ec)
@@ -2407,7 +2762,7 @@ namespace BUILD
             std::cout << "output     " << pathText(buildRoot(options, toolchain)) << "\n";
             std::cout << "config     " << configName(options.config) << "\n";
             std::cout << "cxx        " << pathText(toolchain.cxx) << "\n";
-            std::cout << "family     " << familyName(toolchain.family) << "\n";
+            std::cout << "family     " << toolchainName(toolchain.family) << "\n";
             std::cout << "version    " << toolchain.versionLine << "\n";
             std::cout << "target     " << toolchain.triple << "\n";
             std::cout << "arch       " << archName(toolchain.arch) << "\n";
@@ -2437,7 +2792,7 @@ namespace BUILD
             std::cout << "targets    " << TARGET_ALL;
             for (const Target &target : project.targets)
             {
-                if (!target.internal && target.name != TARGET_BUILDER)
+                if (isUserTarget(target))
                     std::cout << " " << target.name;
             }
             std::cout << " " << TARGET_BUILDER << "\n";
@@ -2469,7 +2824,7 @@ namespace BUILD
             std::cout << TARGET_ALL << "      ";
             for (const Target &target : project.targets)
             {
-                if (!target.internal && target.name != TARGET_BUILDER)
+                if (isUserTarget(target))
                     std::cout << target.name << " ";
             }
             std::cout << "\n";
@@ -2601,9 +2956,76 @@ namespace BUILD
         // Option value parsing
         // ============================================================================
 
-        bool startsWith(const std::string &text, const std::string &prefix)
+        std::size_t editDistance(const std::string &left, const std::string &right)
         {
-            return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+            std::vector<std::size_t> previous(right.size() + 1);
+            std::vector<std::size_t> current(right.size() + 1);
+            for (std::size_t j = 0; j <= right.size(); ++j)
+                previous[j] = j;
+            for (std::size_t i = 1; i <= left.size(); ++i)
+            {
+                current[0] = i;
+                for (std::size_t j = 1; j <= right.size(); ++j)
+                {
+                    const std::size_t substitution =
+                        previous[j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1);
+                    current[j] =
+                        std::min({previous[j] + 1, current[j - 1] + 1, substitution});
+                }
+                previous.swap(current);
+            }
+            return previous[right.size()];
+        }
+
+        std::string optionSuggestion(const std::string &argument)
+        {
+            static const char *KNOWN[] = {
+                "--help", "--version", "--verbose", "--dry-run", "--debug", "--release",
+                "--werror", "--sanitize", "--force", "--compiler", "--arch", "--jobs",
+                "--cxx", "--build-dir", "--root"};
+            const std::string probe = argument.substr(0, argument.find('='));
+            const bool longForm = probe.size() > 1 && probe[1] == '-';
+            std::string best;
+            std::size_t bestDistance = 3;
+            if (longForm)
+            {
+                for (const char *candidate : KNOWN)
+                {
+                    const std::size_t distance = editDistance(probe, candidate);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = candidate;
+                    }
+                }
+            }
+            else if (probe.size() > 2)
+            {
+                const std::string withDash = "-" + probe;
+                for (const char *candidate : KNOWN)
+                    if (withDash == candidate)
+                    {
+                        best = candidate;
+                        break;
+                    }
+            }
+            return best.empty() ? std::string() : " (did you mean '" + best + "'?)";
+        }
+
+        // True for "-vn", "-j4" and similar clusters of builder short options.
+        bool isKnownShortCluster(const std::string &argument)
+        {
+            if (argument.size() <= 2 || argument[0] != '-' || argument[1] == '-')
+                return false;
+            for (std::size_t i = 1; i < argument.size(); ++i)
+            {
+                const char option = argument[i];
+                if (option != 'h' && option != 'v' && option != 'n' && option != 'j')
+                    return false;
+                if (option == 'j')
+                    return true; // the remaining characters are its value
+            }
+            return true;
         }
 
         bool parsePositiveInt(const std::string &text, int &value)
@@ -2685,6 +3107,13 @@ namespace BUILD
             return combined;
         }
 
+        Path canonicalizeWeakly(const Path &path)
+        {
+            std::error_code error;
+            const Path canonical = std::filesystem::weakly_canonical(path, error);
+            return error ? path : canonical;
+        }
+
         // ============================================================================
         // Command-line parsing and entry point
         // ============================================================================
@@ -2693,9 +3122,10 @@ namespace BUILD
         {
             if (options.jobs != 0)
                 return;
-            const char *environment = std::getenv("MOTEVM_JOBS");
+            const std::optional<std::string> environment =
+                platform::environmentValue("MOTEVM_JOBS");
             int parsed = 0;
-            if (environment != nullptr && parsePositiveInt(environment, parsed))
+            if (environment && parsePositiveInt(*environment, parsed))
                 options.jobs = parsed;
             if (options.jobs == 0)
             {
@@ -2718,18 +3148,15 @@ namespace BUILD
             if (options.root.empty())
                 return;
 
-            std::error_code rootError;
-            const Path canonicalRoot =
-                std::filesystem::weakly_canonical(options.root, rootError);
-            if (!rootError)
-                options.root = canonicalRoot;
+            options.root = canonicalizeWeakly(options.root);
 
             if (options.buildDir.empty())
             {
-                const char *environment = std::getenv("MOTEVM_BUILD_DIR");
-                if (environment != nullptr && *environment != '\0')
+                const std::optional<std::string> environment =
+                    platform::environmentValue("MOTEVM_BUILD_DIR");
+                if (environment && !environment->empty())
                     options.buildDir =
-                        resolveAgainst(options.root, pathFromText(environment));
+                        resolveAgainst(options.root, pathFromText(*environment));
                 else
                     options.buildDir = options.root / pathFromText("build");
             }
@@ -2737,11 +3164,7 @@ namespace BUILD
             {
                 options.buildDir = resolveAgainst(options.root, options.buildDir);
             }
-            std::error_code buildError;
-            const Path canonicalBuild =
-                std::filesystem::weakly_canonical(options.buildDir, buildError);
-            if (!buildError)
-                options.buildDir = canonicalBuild;
+            options.buildDir = canonicalizeWeakly(options.buildDir);
         }
 
         int prepareToolchain(const Options &options, int argc, char *argv[],
@@ -2750,20 +3173,32 @@ namespace BUILD
             reexecuted = false;
             const Path logsDir = options.buildDir / ".builder" / "logs";
             const Arch requestedArch = resolveArch(options.arch);
-            if (usesMsvcCompiler(options) && !findExecutable("cl"))
+            const auto tryReexec = [&](Arch arch) -> std::optional<int>
             {
                 int exitCode = 0;
                 std::string reexecError;
-                if (reexecInDevShell(options, argc, argv, requestedArch, logsDir, exitCode,
-                                     reexecError))
+                if (reexecInDevShell(options, argc, argv, arch, logsDir, exitCode, reexecError))
                 {
                     reexecuted = true;
                     return exitCode;
                 }
                 std::cerr << "error: " << reexecError << "\n";
+                return std::nullopt;
+            };
+            if (!platform::supportsMsvc() && usesMsvcCompiler(options))
+            {
+                error = "MSVC is only supported on Windows";
                 return ENVIRONMENT;
             }
-            configureTempDirectory(options.buildDir / ".builder" / "tmp");
+            if (usesMsvcCompiler(options) && !findExecutable("cl"))
+            {
+                if (const std::optional<int> exitCode = tryReexec(requestedArch))
+                    return *exitCode;
+                return ENVIRONMENT;
+            }
+            if (!options.dryRun &&
+                !configureTempDirectory(options.buildDir / ".builder" / "tmp", error))
+                return ENVIRONMENT;
 
             if (!discoverToolchain(options, logsDir, toolchain, error))
                 return ENVIRONMENT;
@@ -2777,15 +3212,8 @@ namespace BUILD
             if (needsDevShell && options.command != Command::Doctor &&
                 options.command != Command::Targets)
             {
-                int exitCode = 0;
-                std::string reexecError;
-                if (reexecInDevShell(options, argc, argv, toolchain.arch, logsDir, exitCode,
-                                     reexecError))
-                {
-                    reexecuted = true;
-                    return exitCode;
-                }
-                std::cerr << "error: " << reexecError << "\n";
+                if (const std::optional<int> exitCode = tryReexec(toolchain.arch))
+                    return *exitCode;
                 return ENVIRONMENT;
             }
             return OK;
@@ -2822,6 +3250,50 @@ namespace BUILD
                              "src/motevm and src/"
                           << TARGET_BUILDER << "); use --root\n";
                 return ENVIRONMENT;
+            }
+
+            if (options.command == Command::Clean || options.command == Command::Rebuild)
+            {
+                std::string cleanError;
+                if (!safeCleanBuildDir(options, cleanError))
+                {
+                    std::cerr << "error: " << cleanError << "\n";
+                    return USAGE;
+                }
+            }
+
+            // One builder per build directory. The lock is taken before any
+            // toolchain probe, object or state file is written.
+            const bool needsBuildLock =
+                options.command == Command::Build || options.command == Command::Self ||
+                options.command == Command::Rebuild || options.command == Command::Clean ||
+                options.command == Command::Doctor || options.command == Command::Targets;
+            // A re-executed child inherits the parent's lock; trying to take it
+            // again would deadlock the DevShell handoff.
+            const std::optional<std::string> inheritedLock =
+                platform::environmentValue(REEXEC_LOCK_ENV);
+            const bool lockInherited = inheritedLock && *inheritedLock == "1";
+            platform::BuildLock buildLock;
+            if (needsBuildLock && !lockInherited)
+            {
+                if (options.command == Command::Clean && !directoryExists(options.buildDir))
+                {
+                    std::cout << "clean: removed 0 item(s)\n";
+                    return OK;
+                }
+                std::string directoryError;
+                if (!ensureDirectory(options.buildDir, directoryError))
+                {
+                    std::cerr << "error: " << directoryError << "\n";
+                    return ENVIRONMENT;
+                }
+                std::string lockError;
+                if (!buildLock.acquire(options.buildDir / pathFromText(".builder.lock"),
+                                       lockError))
+                {
+                    std::cerr << "error: " << lockError << "\n";
+                    return ENVIRONMENT;
+                }
             }
 
             if (options.command == Command::Clean)
@@ -2890,12 +3362,18 @@ namespace BUILD
             }
             if (!endOfOptions_ && !argument.empty() && argument[0] == '-')
             {
+                if (isKnownShortCluster(argument))
+                {
+                    if (!parseShortCluster(argument, error))
+                        return USAGE;
+                    continue;
+                }
                 const OptionStatus status = parseOption(argument, error);
                 if (status == OptionStatus::Failed)
                     return USAGE;
                 if (status == OptionStatus::Handled)
                     continue;
-                error = "unknown option '" + argument + "'";
+                error = "unknown option '" + argument + "'" + optionSuggestion(argument);
                 return USAGE;
             }
             parsePositional(argument);
@@ -2916,6 +3394,40 @@ namespace BUILD
             }
         }
         options_.targets.push_back(argument);
+    }
+
+    bool CommandLineParser::parseShortCluster(const std::string &argument,
+                                              std::string &error)
+    {
+        for (std::size_t i = 1; i < argument.size(); ++i)
+        {
+            const char option = argument[i];
+            if (option == 'j')
+            {
+                std::string value = argument.substr(i + 1);
+                if (!value.empty() && value.front() == '=')
+                    value.erase(0, 1);
+                if (value.empty() && !takeValue(value))
+                {
+                    error = "option '-j' needs a positive integer";
+                    return false;
+                }
+                if (!parsePositiveInt(value, options_.jobs))
+                {
+                    error = "option '-j' needs a positive integer";
+                    return false;
+                }
+                return true;
+            }
+            std::string ignored;
+            if (parseOption(std::string("-") + option, ignored) != OptionStatus::Handled)
+            {
+                error = "unknown option '-" + std::string(1, option) + "' in '" +
+                        argument + "'" + optionSuggestion(argument);
+                return false;
+            }
+        }
+        return true;
     }
 
     CommandLineParser::OptionStatus
@@ -2990,7 +3502,7 @@ namespace BUILD
             }
             return OptionStatus::Handled;
         }
-        if (startsWith(argument, "--compiler="))
+        if (std::string_view(argument).starts_with("--compiler="))
         {
             value = argument.substr(11);
             if (value.empty() || !parseCompilerChoice(value, options_.compiler))
@@ -3000,7 +3512,7 @@ namespace BUILD
             }
             return OptionStatus::Handled;
         }
-        if (startsWith(argument, "--arch="))
+        if (std::string_view(argument).starts_with("--arch="))
         {
             value = argument.substr(7);
             if (value.empty() || !parseArchOption(value, options_.arch))
@@ -3020,7 +3532,7 @@ namespace BUILD
             }
             return OptionStatus::Handled;
         }
-        if (startsWith(argument, "--jobs="))
+        if (std::string_view(argument).starts_with("--jobs="))
         {
             if (!parsePositiveInt(argument.substr(7), options_.jobs))
             {
@@ -3049,7 +3561,7 @@ namespace BUILD
         for (const char *prefix : pathOptions)
         {
             const std::string prefixText(prefix);
-            if (!startsWith(argument, prefixText))
+            if (!std::string_view(argument).starts_with(prefixText))
                 continue;
             const std::string option = prefixText.substr(0, prefixText.size() - 1);
             value = argument.substr(prefixText.size());
@@ -3070,7 +3582,72 @@ namespace BUILD
     }
 }
 
+namespace
+{
+    int guardedRun(int argc, char *argv[])
+    {
+#ifndef _WIN32
+        // An ignored SIGCHLD inherited from the launcher makes waitpid() return
+        // ECHILD and every compiler invocation appear to fail.
+        std::signal(SIGCHLD, SIG_DFL);
+#endif
+        return BUILD::runMain(argc, argv);
+    }
+
+    template <typename Entry>
+    int guardedEntry(Entry entry)
+    {
+        try
+        {
+            return entry();
+        }
+        catch (const std::bad_alloc &)
+        {
+            std::cerr << "error: out of memory\n";
+            return BUILD::ENVIRONMENT;
+        }
+        catch (const std::exception &failure)
+        {
+            std::cerr << "error: " << failure.what() << "\n";
+            return BUILD::ENVIRONMENT;
+        }
+        catch (...)
+        {
+            std::cerr << "error: unexpected internal failure\n";
+            return BUILD::ENVIRONMENT;
+        }
+    }
+}
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t *argv[])
+{
+    return guardedEntry([&]() -> int
+    {
+        std::vector<std::string> storage;
+        storage.reserve(static_cast<std::size_t>(argc > 0 ? argc : 0));
+        for (int i = 0; i < argc; ++i)
+        {
+            const std::wstring wide =
+                argv[i] == nullptr ? std::wstring() : std::wstring(argv[i]);
+            std::string text = BUILD::platform::fromWide(wide);
+            if (text.empty() && !wide.empty())
+            {
+                std::cerr << "error: cannot convert a command-line argument to UTF-8\n";
+                return BUILD::ENVIRONMENT;
+            }
+            storage.push_back(std::move(text));
+        }
+        std::vector<char *> arguments;
+        arguments.reserve(storage.size());
+        for (std::string &argument : storage)
+            arguments.push_back(argument.data());
+        return guardedRun(static_cast<int>(storage.size()), arguments.data());
+    });
+}
+#else
 int main(int argc, char *argv[])
 {
-    return BUILD::runMain(argc, argv);
+    return guardedEntry([&]() -> int { return guardedRun(argc, argv); });
 }
+#endif

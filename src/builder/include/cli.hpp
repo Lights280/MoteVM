@@ -21,6 +21,7 @@ namespace BUILD
         };
 
         OptionStatus parseOption(const std::string &argument, std::string &error);
+        bool parseShortCluster(const std::string &argument, std::string &error);
         bool takeValue(std::string &value);
         void parsePositional(const std::string &argument);
 

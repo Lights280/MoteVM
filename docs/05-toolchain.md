@@ -31,7 +31,10 @@ app.mtr --motear list | info | verify | unpack--> reports / unpacked directory
 
 ### 2.1 选项
 
-- 长选项支持 `--name value` 与 `--name=value`；短选项（`-o`、`-w`、`-C`、`-j`）取下一个 token。
+- 长选项支持 `--name value` 与 `--name=value`；短选项（`-o`、`-w`、`-C`、`-j`）取下一个 token，
+  也可紧贴值（`-oFILE`、`-o=FILE`）。
+- 短选项可捆绑：`-dsi` 等价于 `-d -s -i`；带值的短选项必须位于捆绑末尾（`-go out.mbc`、
+  `-oout.mbc`）。`builder` 同样支持（`-vn` = `-v -n`）。
 - `--` 结束选项解析；其后 token 一律按位置参数处理。
 - `--help`、`--version` 写 **stdout** 并 exit 0，命中后不再处理其余参数。
 - `moteasm` 与 `motedis` 的选项可位于位置参数之前或之后；`motear` 要求子命令是第一个参数，
@@ -41,6 +44,9 @@ app.mtr --motear list | info | verify | unpack--> reports / unpacked directory
 ### 2.2 诊断
 
 所有诊断写 **stderr**；正常数据写 stdout。不使用 ANSI 颜色，重定向后输出确定。
+
+用法错误（参数、选项或互斥组合不合法）先向 stderr 输出一行 `error: <原因>`；能确定近似选项时
+附带 ` (did you mean '<option>'?)`，随后输出 usage。
 
 | 工具 | 诊断格式 |
 |---|---|

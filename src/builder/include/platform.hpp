@@ -27,7 +27,11 @@ namespace BUILD
         inline char pathListSeparator();
         inline std::vector<std::string> executableNames(const std::string &name,
                                                         bool hasExtension);
-        inline void setTempEnvironment(const Path &tempDir);
+        inline std::optional<std::string> environmentValue(const char *name);
+        inline bool isExecutable(const Path &path);
+        inline bool supportsMsvc();
+        inline unsigned long processId();
+        inline bool setTempEnvironment(const Path &tempDir, std::string &error);
 
         inline bool reexecInDevShell(const Options &options, int argc, char *argv[], Arch arch,
                                      const Path &logsDir, int &exitCode, std::string &error);

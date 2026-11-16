@@ -50,9 +50,13 @@ Rules:
 - Any of `-i`, `--step`, `--break`, `--trace` installs `CORE::DebugHook`. `--break` alone does
   **not** stop at entry; `--trace` alone does not enter the REPL.
 - `--trace` may be combined with the REPL; use `--trace-file` to avoid mixing with prompts.
-- Long options accept `--name=value`; `-w` takes the next token verbatim (even if it starts with `-`).
+- Long options accept `--name=value`; `-w` takes the next token verbatim (even if it starts with `-`),
+  and may also be written as `-wDIR` or `-w=DIR`.
+- Short options may be bundled: `-dsi` is `-d -s -i`. A value-taking `-w` must be last in the bundle;
+  its value is the rest of the token or the next token.
 - Missing/empty values for `--break`/`--trace-file`, invalid `--trace`/`--trace-limit` values, and an
-  empty `--workspace=` are usage errors (exit 1): usage text goes to stderr and stdout stays empty.
+  empty `--workspace=` are usage errors (exit 1): an `error: <reason>` line (with a `did you mean`
+  hint when a close option is known) is written to stderr before the usage text; stdout stays empty.
 - `--entry` requires a `.mtr` entry, and a `.mtr` entry cannot be followed by external `.mbc` modules
   (both are usage errors, exit 1).
 - Unknown options and a missing entry module are usage errors (exit 1).

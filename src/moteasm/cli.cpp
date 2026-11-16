@@ -10,7 +10,6 @@
 #include "asm/assembler.hpp"
 #include "define.hpp"
 #include "dis/disassembler.hpp"
-#include "common/args.hpp"
 #include "common/cli.hpp"
 #include "common/diagnostics.hpp"
 #include "common/io.hpp"
@@ -46,15 +45,17 @@ namespace
 
 }
 
-int CLI::parse(int argc, char *argv[], Options &options)
+int CLI::parse(int argc, char *argv[], Options &options, std::string &error)
 {
+    TOOL::ArgReader args(argc, argv, "hvgo", "o");
     bool endOfOptions = false;
-    for (int index = 1; index < argc; ++index)
+    std::string argument;
+    while (args.next(argument))
     {
-        const std::string argument = argv[index] == nullptr ? std::string() : argv[index];
         if (!endOfOptions && TOOL::isEndOfOptions(argument))
         {
             endOfOptions = true;
+            args.disableExpansion();
             continue;
         }
         if (!endOfOptions && (argument == "-h" || argument == "--help"))
@@ -89,55 +90,89 @@ int CLI::parse(int argc, char *argv[], Options &options)
         }
         if (!endOfOptions && (argument == "-o" || TOOL::matchesOption(argument, "--output")))
         {
-            const bool ok =
-                argument == "-o"
-                    ? TOOL::takeValue(argc, argv, index, options.output)
-                    : TOOL::optionValue(argument, "--output", argc, argv, index,
-                                        options.output);
-            if (!ok)
+            const std::string_view name = argument == "-o" ? "-o" : "--output";
+            if (!TOOL::optionValue(argument, name, args, options.output))
+            {
+                error = "option '" + std::string(name) +
+                        "' needs a value (use '" + std::string(name) +
+                        " FILE' or '" + std::string(name) + "=FILE')";
                 return 1;
+            }
             options.outputSet = true;
             continue;
         }
         if (!endOfOptions && TOOL::matchesOption(argument, "--listing"))
         {
-            if (!TOOL::optionValue(argument, "--listing", argc, argv, index,
-                                   options.listingPath))
+            if (!TOOL::optionValue(argument, "--listing", args, options.listingPath))
+            {
+                error = "option '--listing' needs a value (use '--listing FILE' or '--listing=FILE')";
                 return 1;
+            }
             options.listing = true;
             continue;
         }
         if (!endOfOptions && TOOL::matchesOption(argument, "--max-errors"))
         {
             std::string value;
-            if (!TOOL::optionValue(argument, "--max-errors", argc, argv, index, value))
+            if (!TOOL::optionValue(argument, "--max-errors", args, value))
+            {
+                error = "option '--max-errors' needs a value (an integer in 0..100000)";
                 return 1;
+            }
             std::int64_t parsed = 0;
             if (!TOOL::parseInt64(value, parsed) || parsed < 0 || parsed > 100000)
+            {
+                error = "invalid --max-errors '" + value +
+                        "' (expected an integer in 0..100000)";
                 return 1;
+            }
             options.maxErrors = static_cast<int>(parsed);
             continue;
         }
         if (!endOfOptions && TOOL::isOptionToken(argument))
+        {
+            error = "unknown option '" + argument + "'" +
+                    TOOL::optionSuggestion(argument,
+                                           {"-h", "--help", "-v", "--version", "-g",
+                                            "--debug", "--no-debug", "-o", "--output",
+                                            "--listing", "--max-errors",
+                                            "--warn-as-error", "--check-roundtrip"});
             return 1;
+        }
         if (options.input.empty())
             options.input = argument;
         else
+        {
+            error = "unexpected argument '" + argument +
+                    "' (only one input file is accepted)";
             return 1;
+        }
     }
 
     if (options.help || options.version)
         return 0;
     if (options.input.empty())
+    {
+        error = "missing input file (usage: moteasm [options] <input.mta>)";
         return 1;
+    }
     if (options.debug && options.noDebug)
+    {
+        error = "--debug and --no-debug cannot be combined";
         return 1;
+    }
     if (!options.outputSet && TOOL::isStdioToken(options.input))
+    {
+        error = "input '-' needs an explicit -o FILE";
         return 1;
+    }
     if (options.outputSet && !TOOL::isStdioToken(options.output) &&
         !TOOL::isStdioToken(options.input) &&
         TOOL::samePath(options.input, options.output))
+    {
+        error = "input and output are the same file '" + options.input + "'";
         return 1;
+    }
     return 0;
 }
 

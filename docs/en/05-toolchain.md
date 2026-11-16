@@ -33,7 +33,9 @@ C++ compiler without reading `CMakeLists.txt` (see [06 · Build and Release](06-
 ### 2.1 Options
 
 - Long options accept both `--name value` and `--name=value`; short options (`-o`, `-w`, `-C`, `-j`)
-  take the next token.
+  take the next token, or an attached value (`-oFILE`, `-o=FILE`).
+- Short options may be bundled: `-dsi` is `-d -s -i`. A value-taking short option must be last in
+  the bundle (`-go out.mbc`, `-oout.mbc`). `builder` supports this too (`-vn` = `-v -n`).
 - `--` ends option parsing; every following token is positional.
 - `--help` and `--version` write to **stdout** and exit 0; no further arguments are processed.
 - `moteasm` and `motedis` accept options before or after positional arguments; `motear` requires
@@ -45,6 +47,9 @@ C++ compiler without reading `CMakeLists.txt` (see [06 · Build and Release](06-
 
 All diagnostics go to **stderr**; normal data goes to stdout. ANSI colors are never used, so
 redirected output is deterministic.
+
+Usage errors (invalid arguments, options or combinations) print one `error: <reason>` line to stderr,
+with ` (did you mean '<option>'?)` when a close option is known, followed by the usage text.
 
 | Tool | Diagnostic format |
 |---|---|

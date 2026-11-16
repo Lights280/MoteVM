@@ -56,7 +56,7 @@ namespace CLI
         std::string buildId;
     };
 
-    int parse(int argc, char *argv[], Options &options);
+    int parse(int argc, char *argv[], Options &options, std::string &error);
     void printUsage(std::ostream &out);
     void printVersion(std::ostream &out);
 

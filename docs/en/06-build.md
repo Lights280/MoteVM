@@ -161,12 +161,29 @@ Options:
 | `--version` | Print builder, MoteVM and MOTEBC versions |
 | `-h, --help` | Print help |
 
+Short options may be bundled (`-vn` = `-v -n`); a value-taking `-j` must be last in the bundle
+(`-j4` or `-j 4`). Usage errors print `error: <reason>` (with a correction hint when a close option
+is known) before the help text.
+
+Compiler precedence: `--cxx` wins. An explicit `--compiler clang|gcc|msvc` tries only that compiler;
+`MOTEVM_CXX` and `CXX` are consulted only for `--compiler auto` (the default), followed by `clang++`,
+`g++` and `cl`.
+
+Only one builder/clean/doctor/targets may use a build directory at a time: it takes an exclusive
+lock at `<buildDir>/.builder.lock`, and a second process fails immediately with exit 3. `clean`
+refuses a `--build-dir` that is the project root, an ancestor of it, or inside `src`; it removes
+only known builder outputs (directories and regular files).
+
+`--dry-run` does not create object/state/log/dep/bin output directories, but it still probes the
+toolchain (temporary probe logs under `.builder/logs` are removed afterwards). After a cache
+fingerprint format upgrade, the first build rebuilds everything once.
+
 Environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `MOTEVM_CXX` | Compiler candidate path; used after `--cxx` and before `CXX` and automatic search |
-| `CXX` | Compiler candidate path; consulted after `MOTEVM_CXX` and before automatic search |
+| `MOTEVM_CXX` | Compiler candidate path for `--compiler auto`; used before `CXX` and automatic search |
+| `CXX` | Compiler candidate path for `--compiler auto`; consulted after `MOTEVM_CXX` and before automatic search |
 | `MOTEVM_BUILD_DIR` | Output root when `--build-dir` is absent; resolved relative to the project root |
 | `MOTEVM_JOBS` | Parallel job count when `-j/--jobs` is absent; accepts 1..1024 |
 | `VSCMD_ARG_TGT_ARCH` | Target architecture of the MSVC developer environment (`amd64`/`x86_64`/`win32`, and so on); used to decide whether to re-enter the DevShell |
@@ -182,6 +199,11 @@ build/bin/builder[.exe]     # default self location
 ```
 
 `builder self` rebuilds to `build/bin/builder[.exe]` by default; if the running builder is already inside the build tree, it rebuilds that executable in place.
+
+On Windows the builder uses the wide entry point (`wmain`) and `GetEnvironmentVariableW`; arguments
+and environment values are converted to UTF-8 internally. This works with MSVC and clang-cl, but both
+need exceptions enabled (`/EHsc`, already part of CMake's default flags). A manual MinGW `clang++`
+bootstrap needs `-municode`.
 
 The shared source groups `motevm_core` and `motevm_tools` are internal targets: they do not appear in `all` and cannot be selected as user targets. They are compiled once per build and reused by every executable that links them. The shared source lists are hardcoded in builder; adding a shared source requires updating both builder and the root `CMakeLists.txt`.
 

@@ -20,7 +20,7 @@ namespace CLI
         std::string input;
     };
 
-    int parse(int argc, char *argv[], Options &options);
+    int parse(int argc, char *argv[], Options &options, std::string &error);
     void printUsage(std::ostream &out);
     void printVersion(std::ostream &out);
     int run(const Options &options, std::ostream &out, std::ostream &err);
