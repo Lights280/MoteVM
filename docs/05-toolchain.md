@@ -234,7 +234,7 @@ resource      371  6eb5bb10  src/hello.mta
 | `--resource NAME` | 只解指定资源，可重复 |
 
 - 未给任何过滤器时解出全部条目；过滤器按归档内的完整名称精确匹配。
-- 拒绝符号链接、非普通文件目标、越出目标目录的路径，以及已存在的 `<target>.tmp`。
+- 拒绝符号链接、非普通文件目标、越出目标目录的路径。
 - 成功输出：`extracted N entry(ies) to <绝对路径>`。
 
 ### 6.7 manifest 字段

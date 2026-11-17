@@ -21,9 +21,9 @@ namespace
 {
     std::string defaultOutput(const std::string &input)
     {
-        std::filesystem::path path(input);
+        std::filesystem::path path = TOOL::pathFromUtf8(input);
         path.replace_extension(".mbc");
-        return path.string();
+        return TOOL::pathToUtf8(path);
     }
 
     std::string listingText(const ASM::AssembleResult &result)
@@ -201,7 +201,11 @@ void CLI::printUsage(std::ostream &out)
 
 int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
 {
-    TOOL::setBinaryStdio();
+    if (!TOOL::setBinaryStdio())
+    {
+        err << "moteasm: error: cannot switch stdio to binary mode\n";
+        return TOOL::INTERNAL;
+    }
     (void)out;
 
     const std::string display = options.input == "-" ? "<stdin>" : options.input;

@@ -299,7 +299,7 @@ error: trap 3 (TRAP) at pc=8
 
 细节：
 
-- `print_str`/`eprint_str` 的 `len` 可以为 0，此时只输出换行。
+- `print_str`/`eprint_str` 的 `len` 可以为 0，此时只输出换行；`len` 上限为 16 MiB，超限返回 `-5`（避免宿主一次性分配接近 4 GiB）。
 - `const_addr`/`const_len` 的 `index` 越界、当前模块不存在或 arity 不符 ⇒ `0xFFFFFFFF`。
 - `mem_alloc` 的起点是 `align8(常量池占用字节数)`；每次分配后游标按 8 字节对齐推进；
   只增不减。目标区间超出 4 GiB 或块分配失败 ⇒ `0xFFFFFFFF`。

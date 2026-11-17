@@ -237,6 +237,33 @@ bool ASM::emitImage(Module &module, const Options &options, std::vector<byte> &i
                     std::vector<ListingEntry> &listing, TOOL::Diagnostics &diagnostics)
 {
     (void)listing;
+
+    // Enforce the format limits here, before the self-check can turn them into
+    // an internal E031: a single String constant is capped at 16 MiB and meta
+    // values are counted by a 16-bit length field.
+    for (const Constant &constant : module.constants)
+    {
+        if (constant.value.kind == PARSE::ConstKind::string &&
+            constant.value.bytes.size() > static_cast<std::size_t>(PARSE::MAX_STRING_BYTES))
+        {
+            diagnostics.error("E023", constant.position, "string constant exceeds 16 MiB");
+            return false;
+        }
+    }
+    if (module.moduleName.size() > 0xFFFFu)
+    {
+        diagnostics.error("E023", module.modulePos, "module name exceeds 65535 bytes");
+        return false;
+    }
+    for (const MetaEntry &entry : module.meta)
+    {
+        if (entry.value.size() > 0xFFFFu)
+        {
+            diagnostics.error("E023", entry.position, "meta value exceeds 65535 bytes");
+            return false;
+        }
+    }
+
     bool hasDebug = false;
     if (!options.noDebug)
     {

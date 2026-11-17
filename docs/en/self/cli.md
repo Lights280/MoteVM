@@ -326,7 +326,7 @@ negative error codes are in [05 · Toolchain Reference](../05-toolchain.md) §8.
 
 Details:
 
-- `print_str`/`eprint_str` accept `len == 0`, which writes only a newline.
+- `print_str`/`eprint_str` accept `len == 0`, which writes only a newline; `len` is capped at 16 MiB and returns `-5` above that (avoiding a near-4 GiB host allocation).
 - `const_addr`/`const_len` return `0xFFFFFFFF` for an out-of-range `index`, a missing module, or
   wrong arity.
 - `mem_alloc` starts at `align8(constantBytes)`; the cursor advances 8-byte aligned and never

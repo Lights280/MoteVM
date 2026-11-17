@@ -11,6 +11,7 @@
 #include "parse.hpp"
 #include "workspace.hpp"
 #include "common/cli.hpp"
+#include "common/path.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -148,6 +149,11 @@ namespace
             out.clear();
             return true;
         }
+        // Bound the host allocation before touching the guest range. Without
+        // this a guest can request ~4 GiB via print_str even when the range is
+        // invalid (the Memory check happens after the allocation).
+        if (size > MAX_HOST_IO_BYTES)
+            return false;
         std::string buffer(size, '\0');
         const int result = state.host->memory().reads(
             std::span<byte>(reinterpret_cast<byte *>(buffer.data()), buffer.size()), address, size);
@@ -206,9 +212,17 @@ namespace
         HostState *state = static_cast<HostState *>(user);
         if (state == nullptr || state->out == nullptr || args == nullptr || arity != 1)
             return 0;
-        *state->out << std::bit_cast<int>(args[0]) << '\n';
-        state->out->flush(); // line buffered (docs/05-toolchain.md §8.5)
-        ++state->lines;
+        try
+        {
+            *state->out << std::bit_cast<int>(args[0]) << '\n';
+            state->out->flush(); // line buffered (docs/05-toolchain.md §8.5)
+            ++state->lines;
+        }
+        catch (...)
+        {
+            // `print` is documented to return 0; keep the no-throw contract.
+            return 0;
+        }
         return 0;
     }
 
@@ -304,25 +318,33 @@ namespace
         if (size == 0 || size > MAX_HOST_HEAP_BYTES)
             return NO_INDEX;
 
-        if (!state->heapReady)
+        try
         {
-            state->heapCursor = align8(state->host->stats().constantBytes);
-            state->heapReady = true;
-        }
+            if (!state->heapReady)
+            {
+                state->heapCursor = align8(state->host->stats().constantBytes);
+                state->heapReady = true;
+            }
 
-        const qword start = state->heapCursor;
-        const qword end = start + size;
-        if (end > HOST_ADDRESS_LIMIT)
-            return NO_INDEX;
-
-        const dword firstBlock = static_cast<dword>(start / MEMORY::BLOCK_SIZE);
-        const dword lastBlock = static_cast<dword>((end - 1) / MEMORY::BLOCK_SIZE);
-        for (dword block = firstBlock; block <= lastBlock; ++block)
-            if (state->host->memory().allocate(static_cast<int>(block)) != MEMORY::OK)
+            const qword start = state->heapCursor;
+            const qword end = start + size;
+            if (end > HOST_ADDRESS_LIMIT)
                 return NO_INDEX;
 
-        state->heapCursor = align8(end);
-        return static_cast<dword>(start);
+            const dword firstBlock = static_cast<dword>(start / MEMORY::BLOCK_SIZE);
+            const dword lastBlock = static_cast<dword>((end - 1) / MEMORY::BLOCK_SIZE);
+            for (dword block = firstBlock; block <= lastBlock; ++block)
+                if (state->host->memory().allocate(static_cast<int>(block)) != MEMORY::OK)
+                    return NO_INDEX;
+
+            state->heapCursor = align8(end);
+            return static_cast<dword>(start);
+        }
+        catch (...)
+        {
+            // HostFunction must not throw (core.hpp); Memory::allocate can.
+            return NO_INDEX;
+        }
     }
 
     dword memFreeFunction(void *user, const dword *args, int arity)
@@ -992,12 +1014,14 @@ namespace
 
     bool dwordValue(const std::string &text, dword &value)
     {
-        if (text.empty())
+        // Decimal only: reject leading whitespace, signs and octal/hex forms
+        // (stoull with base 0 accepted all three).
+        if (text.empty() || text.front() < '0' || text.front() > '9')
             return false;
         try
         {
             std::size_t used = 0;
-            const unsigned long long parsed = std::stoull(text, &used, 0);
+            const unsigned long long parsed = std::stoull(text, &used, 10);
             if (used != text.size() || parsed > 0xFFFFFFFFull)
                 return false;
             value = static_cast<dword>(parsed);
@@ -1270,7 +1294,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
             return USAGE;
         }
 
-        std::filesystem::path resolved(options.entry);
+        std::filesystem::path resolved = TOOL::pathFromUtf8(options.entry);
         if (workspace.hasRoot())
         {
             workspaceCode = workspace.resolveRead(options.entry, resolved);
@@ -1283,7 +1307,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
         }
 
         archive = std::make_unique<ARCHIVE::Archive>();
-        int code = archive->load(resolved.string());
+        int code = archive->load(TOOL::pathToUtf8(resolved));
         if (code == ARCHIVE::OK)
             code = archive->parse(false); // Host::loadBytes verifies each module once
         if (code != ARCHIVE::OK)
@@ -1326,7 +1350,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
         // Entry module first so Host::module(0) and the debugger still point at it;
         // the remaining modules follow in archive (name) order.
         const std::string prefix =
-            std::filesystem::path(options.entry).filename().string() + "!";
+            TOOL::pathToUtf8(TOOL::pathFromUtf8(options.entry).filename()) + "!";
         const ARCHIVE::Entry *entryModule = archive->find(entryName);
         failure = host.loadBytes(entryModule->data, prefix + entryName);
         if (failure != HOST::OK)
@@ -1352,7 +1376,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
     {
         for (const std::string &file : files)
         {
-            std::filesystem::path resolved(file);
+            std::filesystem::path resolved = TOOL::pathFromUtf8(file);
             if (workspace.hasRoot())
             {
                 workspaceCode = workspace.resolveRead(file, resolved);
@@ -1365,7 +1389,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
                     break;
                 }
             }
-            failure = host.load(resolved.string(), file);
+            failure = host.load(TOOL::pathToUtf8(resolved), file);
             if (failure != HOST::OK)
             {
                 failedAt = STAGE_LOAD;
@@ -1415,7 +1439,7 @@ int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
                         traceStream = &out;
                     else
                     {
-                        std::filesystem::path resolved(options.traceFile);
+                        std::filesystem::path resolved = TOOL::pathFromUtf8(options.traceFile);
                         if (workspace.hasRoot())
                         {
                             const int code = workspace.resolveWrite(options.traceFile, resolved);

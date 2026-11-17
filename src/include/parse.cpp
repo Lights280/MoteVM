@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "common/path.hpp"
+
 // Hardware CRC-32C. The SSE4.2 path is selected at run time; the ARM path is
 // compiled only when the target already implies the CRC extension. Both fall
 // back to the portable slicing-by-8 implementation below. Define
@@ -168,7 +170,9 @@ namespace
     dword crc32cUpdate(dword crc, const byte *data, std::size_t size)
     {
 #if defined(MOTEVM_CRC32C_ARM)
-        return crc32cUpdateArm(crc, data, size);
+        if constexpr (std::endian::native == std::endian::little)
+            return crc32cUpdateArm(crc, data, size);
+        return crc32cUpdatePortable(crc, data, size);
 #elif defined(MOTEVM_CRC32C_X86)
         if constexpr (std::endian::native == std::endian::little)
         {
@@ -330,14 +334,15 @@ int Parse::load(const std::string &path)
     clearImage();
     buffer.clear();
 
+    const std::filesystem::path filePath = TOOL::pathFromUtf8(path);
     std::error_code error;
-    const auto size = std::filesystem::file_size(path, error);
+    const auto size = std::filesystem::file_size(filePath, error);
     if (error)
         return PARSE::FAIL_OPEN;
     if (size > PARSE::MAX_MODULE_BYTES)
         return PARSE::TOO_LARGE;
 
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(filePath, std::ios::binary);
     if (!file)
         return PARSE::FAIL_OPEN;
 
@@ -355,6 +360,8 @@ int Parse::load(const std::string &path)
 int Parse::load(std::span<const byte> bytes)
 {
     clearImage();
+    if (bytes.size() > static_cast<std::size_t>(PARSE::MAX_MODULE_BYTES))
+        return PARSE::TOO_LARGE;
     buffer.assign(bytes.begin(), bytes.end());
     return PARSE::OK;
 }

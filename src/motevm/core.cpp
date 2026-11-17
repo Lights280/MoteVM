@@ -692,13 +692,13 @@ int Core::executeHot(StackFrame *&frame, dword &pc, dword &executedLocal)
             if (fuelLocal == 0)
             {
                 lastError = CORE::FUEL_EXHAUSTED;
+                lastErrorPc = ipc; // instruction that was not executed
                 VM_SYNC();
                 return CORE::FUEL_EXHAUSTED;
             }
             --fuelLocal;
         }
 
-        ++count;
         if constexpr (GUARD_INTERRUPT)
         {
             executed += count;
@@ -707,6 +707,7 @@ int Core::executeHot(StackFrame *&frame, dword &pc, dword &executedLocal)
             if (interruptLocal(interruptUserLocal))
             {
                 lastError = CORE::INTERRUPTED;
+                lastErrorPc = ipc; // instruction that was not executed
                 VM_SYNC();
                 return CORE::INTERRUPTED;
             }
@@ -739,6 +740,9 @@ int Core::executeHot(StackFrame *&frame, dword &pc, dword &executedLocal)
             }
             VM_GUARDS_DIRTY_CHECK();
         }
+        // Count only after the interrupt/debug hooks: a stop at pc observes
+        // instructionCount() as "executed so far", not including this one.
+        ++count;
         ipc += ISA::INSTRUCTION_SIZE;
 
         switch (inst & ISA::OPCODE_MASK)

@@ -115,18 +115,37 @@ const PARSE::OpInfo *PARSE::opcodeInfo(byte opcode)
 
 void PARSE::fixpointCopyExtents(std::vector<word> &extents, std::span<const CallEdge> edges)
 {
-    bool changed = true;
-    while (changed)
+    // Worklist propagation: an extent only increases, so revisiting a node's
+    // callers when it grows is enough. A repeated full sweep is quadratic for
+    // an adversarially ordered call chain (a 64 MiB module could burn minutes).
+    const std::size_t count = extents.size();
+    std::vector<std::vector<dword>> callers(count);
+    for (const CallEdge &edge : edges)
+        if (edge.caller < count && edge.callee < count)
+            callers[edge.callee].push_back(edge.caller);
+
+    std::vector<dword> pending;
+    pending.reserve(count);
+    for (const CallEdge &edge : edges)
     {
-        changed = false;
-        for (const CallEdge &edge : edges)
+        if (edge.caller >= count || edge.callee >= count)
+            continue;
+        if (extents[edge.caller] < extents[edge.callee])
         {
-            if (edge.caller >= extents.size() || edge.callee >= extents.size())
-                continue;
-            if (extents[edge.caller] < extents[edge.callee])
+            extents[edge.caller] = extents[edge.callee];
+            pending.push_back(edge.caller);
+        }
+    }
+    while (!pending.empty())
+    {
+        const dword callee = pending.back();
+        pending.pop_back();
+        for (const dword caller : callers[callee])
+        {
+            if (extents[caller] < extents[callee])
             {
-                extents[edge.caller] = extents[edge.callee];
-                changed = true;
+                extents[caller] = extents[callee];
+                pending.push_back(caller);
             }
         }
     }
@@ -135,9 +154,18 @@ void PARSE::fixpointCopyExtents(std::vector<word> &extents, std::span<const Call
 int PARSE::Verifier::verify(const Image &target)
 {
     image = &target;
+    if (image->code.size() % ISA::INSTRUCTION_SIZE != 0)
+        return PARSE::BAD_CODE;
 
     // V51: all words decode
     const qword words = image->code.size() / ISA::INSTRUCTION_SIZE;
+    for (const Function &fn : image->functions)
+    {
+        const qword begin = fn.entry;
+        const qword end = static_cast<qword>(fn.entry) + fn.instr;
+        if (fn.instr == 0 || begin > words || end > words)
+            return PARSE::BAD_CODE;
+    }
     for (qword i = 0; i < words; ++i)
     {
         const dword instruction = at32(image->code, i * ISA::INSTRUCTION_SIZE);
@@ -269,6 +297,8 @@ int PARSE::Verifier::verify(const Image &target, std::vector<word> &copyExtents)
 int PARSE::Verifier::verifyFunction(dword index)
 {
     const PARSE::Function &fn = image->functions[index];
+    if (fn.instr == 0)
+        return PARSE::BAD_CODE;
     for (dword pc = fn.entry; pc < fn.entry + fn.instr; ++pc)
     {
         const dword instruction =

@@ -250,8 +250,7 @@ Prints a key-value summary of the header and manifest; `--json` prints JSON with
 | `--resource NAME` | Extract only the named resource, repeatable |
 
 - Without filters, every entry is extracted; filters match the full in-archive name exactly.
-- Symbolic links, non-regular targets, paths outside the destination directory, and an existing
-  `<target>.tmp` are rejected.
+- Symbolic links, non-regular targets, and paths outside the destination directory are rejected.
 - Success output: `extracted N entry(ies) to <absolute path>`.
 
 ### 6.7 Manifest Fields

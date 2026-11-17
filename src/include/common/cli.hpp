@@ -151,8 +151,9 @@ namespace TOOL
 
         int argc_;
         char **argv_;
-        std::string_view shortOptions_;
-        std::string_view valueOptions_;
+        // Owned copies: callers must not have to keep the option tables alive.
+        std::string shortOptions_;
+        std::string valueOptions_;
         int index_;
         bool expand_ = true;
         bool hasAttached_ = false;

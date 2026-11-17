@@ -194,10 +194,11 @@ namespace BUILD
             return out;
         }
 
-        // Batch files are read in the console code page, not UTF-8.
+        // Batch files are read by cmd.exe using the console input code page
+        // (chcp normally changes both, but they are independently settable).
         inline bool toConsoleEncoding(const std::wstring &text, std::string &out)
         {
-            const UINT codePage = GetConsoleOutputCP() == 0 ? CP_OEMCP : GetConsoleOutputCP();
+            const UINT codePage = GetConsoleCP() == 0 ? CP_OEMCP : GetConsoleCP();
             BOOL usedDefault = FALSE;
             const int needed = WideCharToMultiByte(
                 codePage, static_cast<DWORD>(WC_NO_BEST_FIT_CHARS), text.c_str(),
@@ -260,10 +261,15 @@ namespace BUILD
                     "cannot wait for '" + executable + "' " + windowsErrorText(code);
                 return false;
             }
+            // WaitForSingleObject already confirmed termination. At this point
+            // STILL_ACTIVE (259) is a legitimate exit code, not "still running";
+            // only a failing GetExitCodeProcess is an error.
             DWORD exitCode = 0;
-            if (!GetExitCodeProcess(process, &exitCode) || exitCode == STILL_ACTIVE)
+            if (!GetExitCodeProcess(process, &exitCode))
             {
-                result.spawnError = "cannot read the exit code of '" + executable + "'";
+                const DWORD code = GetLastError();
+                result.spawnError = "cannot read the exit code of '" + executable + "' " +
+                                    windowsErrorText(code);
                 return false;
             }
             result.started = true;

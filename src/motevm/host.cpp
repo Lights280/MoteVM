@@ -49,8 +49,15 @@ int Host::install(Parse parser, const std::string &displayPath)
         return bound;
     }
 
+    // Make the three parallel vectors publish the new module atomically with
+    // respect to exceptions: reserve and copy first, then move (noexcept).
+    std::string pathCopy(displayPath);
+    const std::size_t next = modules.size() + 1;
+    modules.reserve(next);
+    modulePaths.reserve(next);
+    imports.reserve(next);
     modules.push_back(std::move(parser));
-    modulePaths.push_back(displayPath);
+    modulePaths.push_back(std::move(pathCopy));
     imports.push_back(std::move(slots));
     ++hostStats.modules;
     hostStats.constants += modules.back().image().constants.size();

@@ -165,12 +165,22 @@ std::size_t TOOL::codePointColumn(std::string_view line, std::size_t byteOffset)
 {
     if (byteOffset > line.size())
         byteOffset = line.size();
+    const std::span<const byte> bytes(reinterpret_cast<const byte *>(line.data()), line.size());
     std::size_t column = 1;
-    for (std::size_t i = 0; i < byteOffset; ++i)
+    std::size_t index = 0;
+    while (index < byteOffset)
     {
-        const unsigned char character = static_cast<unsigned char>(line[i]);
-        if ((character & 0xC0u) != 0x80u)
+        std::uint32_t codePoint = 0;
+        const std::size_t start = index;
+        if (decodeOne(bytes, index, codePoint))
+        {
             ++column;
+            continue;
+        }
+        // Invalid sequence: count the offending byte as one column rather than
+        // folding it into the next valid lead byte.
+        index = start + 1;
+        ++column;
     }
     return column;
 }
@@ -408,6 +418,10 @@ bool TOOL::parseFloatBits(std::string_view text, std::uint64_t &bits)
         cleaned.insert(cleaned.begin(), '0');
     else if (cleaned.size() >= 2 && (cleaned[0] == '-' || cleaned[0] == '+') && cleaned[1] == '.')
         cleaned.insert(cleaned.begin() + 1, '0');
+    // from_chars' floating-point grammar has no leading '+'; integers in this
+    // assembler do accept it, so normalise before parsing.
+    if (cleaned[0] == '+')
+        cleaned.erase(cleaned.begin());
 
     double value = 0.0;
     const std::from_chars_result result =

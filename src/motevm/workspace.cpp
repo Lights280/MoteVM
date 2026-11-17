@@ -4,6 +4,8 @@
 #include <cwctype>
 #include <iterator>
 
+#include "common/path.hpp"
+
 namespace
 {
     bool hasEmbeddedNul(const std::string &text)
@@ -40,7 +42,8 @@ int Workspace::setRoot(const std::string &directory)
         return WORKSPACE::BAD_ROOT;
 
     std::error_code error;
-    const std::filesystem::path canonical = std::filesystem::weakly_canonical(directory, error);
+    const std::filesystem::path canonical =
+        std::filesystem::weakly_canonical(TOOL::pathFromUtf8(directory), error);
     if (error)
         return WORKSPACE::BAD_ROOT;
 
@@ -57,7 +60,7 @@ int Workspace::setRoot(const std::string &directory)
 
 std::string Workspace::rootText(void) const
 {
-    return rootPath.string();
+    return TOOL::pathToUtf8(rootPath);
 }
 
 // Component-wise containment: "C:\ws2" is not inside "C:\ws" (a plain string
@@ -90,7 +93,7 @@ int Workspace::resolve(const std::string &userPath, std::filesystem::path &out) 
     if (userPath.empty() || hasEmbeddedNul(userPath))
         return WORKSPACE::BAD_PATH;
 
-    const std::filesystem::path input(userPath);
+    const std::filesystem::path input = TOOL::pathFromUtf8(userPath);
     // Windows drive-relative ("C:foo") and root-relative ("\foo") forms are
     // ambiguous: they silently bind to a per-drive or per-process directory.
     if (!input.is_absolute() && (input.has_root_name() || input.has_root_directory()))
@@ -105,6 +108,9 @@ int Workspace::resolve(const std::string &userPath, std::filesystem::path &out) 
     if (!contains(canonical))
         return WORKSPACE::OUTSIDE;
 
+    // The canonical path is checked here and opened by the caller later; a
+    // concurrent symlink swap in between is not prevented (see plan/fix M-08).
+    // This is a cooperative workspace boundary, not a same-user race barrier.
     out = canonical;
     return WORKSPACE::OK;
 }

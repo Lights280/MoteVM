@@ -490,15 +490,32 @@ namespace
 
         if (numbers.size() == 2 && !autoRegs)
         {
-            arity = static_cast<dword>(numbers[0]);
-            regs = static_cast<dword>(numbers[1]);
+            // Validate before narrowing: a value such as 2^32 must not wrap to 0.
+            const bool arityOk = numbers[0] <= 16;
+            const bool regsOk = numbers[1] >= 1 && numbers[1] <= ISA::REGISTER_COUNT;
+            if (!arityOk)
+                diagnostics.error("E021", position, "arity must be in [0, 16]");
+            if (!regsOk)
+                diagnostics.error("E020", position, "regs must be in [1, 256] or 'auto'");
+            arity = arityOk ? static_cast<dword>(numbers[0]) : 0;
+            regs = regsOk ? static_cast<dword>(numbers[1]) : 1;
         }
         else if (numbers.size() == 1)
         {
             if (autoRegs)
-                arity = static_cast<dword>(numbers[0]);
+            {
+                const bool arityOk = numbers[0] <= 16;
+                if (!arityOk)
+                    diagnostics.error("E021", position, "arity must be in [0, 16]");
+                arity = arityOk ? static_cast<dword>(numbers[0]) : 0;
+            }
             else
-                regs = static_cast<dword>(numbers[0]); // .func name regs: arity defaults to 0
+            {
+                const bool regsOk = numbers[0] >= 1 && numbers[0] <= ISA::REGISTER_COUNT;
+                if (!regsOk)
+                    diagnostics.error("E020", position, "regs must be in [1, 256] or 'auto'");
+                regs = regsOk ? static_cast<dword>(numbers[0]) : 1; // arity defaults to 0
+            }
         }
         else if (numbers.empty() && autoRegs)
         {

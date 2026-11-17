@@ -325,7 +325,9 @@ public:
     // Core::attachVerifiedModule. Empty until parse() succeeds.
     std::span<const word> copyExtents(void) const { return copyExtents_; }
     dword entryFunction(void) const { return imageData.header.entry; }                     // FUNCS index
-    dword entryPc(void) const;                                                             // CODE instruction index
+    // CODE instruction index. Precondition: parse() succeeded; it returns 0
+    // for an invalid header entry, which is indistinguishable from entry pc 0.
+    dword entryPc(void) const;
     bool hasDebug(void) const;
 
     static dword crc32c(std::span<const byte> data);

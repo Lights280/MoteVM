@@ -135,7 +135,11 @@ void CLI::printUsage(std::ostream &out)
 
 int CLI::run(const Options &options, std::ostream &out, std::ostream &err)
 {
-    TOOL::setBinaryStdio();
+    if (!TOOL::setBinaryStdio())
+    {
+        err << "motedis: error: cannot switch stdio to binary mode\n";
+        return TOOL::INTERNAL;
+    }
     (void)out;
 
     const std::string display = options.input == "-" ? "<stdin>" : options.input;

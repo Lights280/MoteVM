@@ -53,7 +53,7 @@ namespace
 
     std::string defaultName(const std::string &path)
     {
-        return std::filesystem::path(path).filename().string();
+        return TOOL::pathToUtf8(TOOL::pathFromUtf8(path).filename());
     }
 
     // Checks the input size before reading, so a huge local file cannot be
@@ -62,7 +62,8 @@ namespace
                       std::string &error)
     {
         std::error_code sizeError;
-        const std::uintmax_t size = std::filesystem::file_size(path, sizeError);
+        const std::uintmax_t size =
+            std::filesystem::file_size(TOOL::pathFromUtf8(path), sizeError);
         if (sizeError)
         {
             error = "cannot read '" + path + "': " + sizeError.message();
@@ -73,7 +74,9 @@ namespace
             error = "'" + path + "' exceeds the 64 MiB entry limit";
             return 2;
         }
-        if (!TOOL::readFile(path, data, error))
+        // Pass the cap through as well: the file may grow between the stat and
+        // the read.
+        if (!TOOL::readFile(path, data, error, static_cast<std::uintmax_t>(limit)))
             return 3;
         return 0;
     }
@@ -146,16 +149,45 @@ namespace
         return 0;
     }
 
+    bool componentEquals(const std::filesystem::path &left,
+                         const std::filesystem::path &right)
+    {
+        std::string a = TOOL::pathToUtf8(left);
+        std::string b = TOOL::pathToUtf8(right);
+#if defined(_WIN32)
+        a = TOOL::toLowerAscii(a);
+        b = TOOL::toLowerAscii(b);
+#endif
+        return a == b;
+    }
+
+    // Splits candidate into the components below root. lexically_relative is
+    // case-sensitive, which rejects valid trees on Windows when the drive or a
+    // directory differs only in case.
+    bool relativeParts(const std::filesystem::path &root,
+                       const std::filesystem::path &candidate,
+                       std::vector<std::filesystem::path> &parts)
+    {
+        parts.clear();
+        auto rootIt = root.begin();
+        auto candidateIt = candidate.begin();
+        for (; rootIt != root.end(); ++rootIt, ++candidateIt)
+            if (candidateIt == candidate.end() || !componentEquals(*rootIt, *candidateIt))
+                return false;
+        for (; candidateIt != candidate.end(); ++candidateIt)
+        {
+            if (*candidateIt == "..")
+                return false;
+            parts.push_back(*candidateIt);
+        }
+        return true;
+    }
+
     bool underRoot(const std::filesystem::path &root,
                    const std::filesystem::path &candidate)
     {
-        const std::filesystem::path relative = candidate.lexically_relative(root);
-        if (relative.empty())
-            return false;
-        for (const std::filesystem::path &part : relative)
-            if (part == "..")
-                return false;
-        return true;
+        std::vector<std::filesystem::path> parts;
+        return relativeParts(root, candidate, parts);
     }
 
     bool missingFile(const std::error_code &error)
@@ -166,17 +198,8 @@ namespace
     bool checkTarget(const std::filesystem::path &root,
                      const std::filesystem::path &target, bool force, std::string &error)
     {
-        const std::filesystem::path relative = target.lexically_relative(root);
-        if (relative.empty())
-        {
-            error = "target is outside the destination directory";
-            return false;
-        }
-
         std::vector<std::filesystem::path> parts;
-        for (const std::filesystem::path &part : relative)
-            parts.push_back(part);
-        if (parts.empty())
+        if (!relativeParts(root, target, parts) || parts.empty())
         {
             error = "target is outside the destination directory";
             return false;
@@ -193,7 +216,8 @@ namespace
             {
                 if (missingFile(statusError))
                     break;
-                error = "cannot inspect '" + current.string() + "': " + statusError.message();
+                error = "cannot inspect '" + TOOL::pathToUtf8(current) + "': " +
+                        statusError.message();
                 return false;
             }
             if (std::filesystem::is_symlink(status))
@@ -256,25 +280,6 @@ namespace
         if (!underRoot(root, target.lexically_normal()))
         {
             error = "target is outside the destination directory";
-            return false;
-        }
-
-        // TOOL::writeFileAtomic uses "<target>.tmp". Refuse to start when that
-        // path already exists, otherwise an unrelated file would be removed.
-        std::filesystem::path temporary = target;
-        temporary += ".tmp";
-        std::error_code temporaryError;
-        const std::filesystem::file_status temporaryStatus =
-            std::filesystem::symlink_status(temporary, temporaryError);
-        if (!temporaryError && std::filesystem::exists(temporaryStatus))
-        {
-            error = "temporary path '" + temporary.string() +
-                    "' already exists; refusing to overwrite it";
-            return false;
-        }
-        if (temporaryError && !missingFile(temporaryError))
-        {
-            error = "cannot inspect temporary path: " + temporaryError.message();
             return false;
         }
         return true;
@@ -428,7 +433,7 @@ namespace
 
         std::string packageName = options.packageName;
         if (packageName.empty())
-            packageName = std::filesystem::path(options.output).stem().string();
+            packageName = TOOL::pathToUtf8(TOOL::pathFromUtf8(options.output).stem());
         if (packageName.empty())
             packageName = "package";
         const std::string packageVersion =
@@ -632,7 +637,7 @@ namespace
             return loaded;
 
         std::error_code errorCode;
-        const std::filesystem::path requested(options.directory);
+        const std::filesystem::path requested = TOOL::pathFromUtf8(options.directory);
         std::filesystem::create_directories(requested, errorCode);
         if (errorCode)
         {
@@ -702,7 +707,7 @@ namespace
                     entry.name.substr(start, slash == std::string::npos
                                                  ? std::string::npos
                                                  : slash - start);
-                target /= std::filesystem::path(part);
+                target /= TOOL::pathFromUtf8(part);
                 if (slash == std::string::npos)
                     break;
                 start = slash + 1;
@@ -717,6 +722,9 @@ namespace
             targets.push_back({&entry, target});
         }
 
+        // checkTarget() runs before this loop; a concurrent process can still
+        // swap a component for a symlink in between. This is a cooperative
+        // unpack, not a same-user race barrier (see plan/fix A-04/M-08).
         for (const Target &target : targets)
         {
             std::error_code directoryError;
@@ -724,13 +732,14 @@ namespace
                                                 directoryError);
             if (directoryError)
             {
-                err << "motear: cannot create '" << target.path.parent_path().string()
+                err << "motear: cannot create '"
+                    << TOOL::pathToUtf8(target.path.parent_path())
                     << "': " << directoryError.message() << "\n";
                 return 3;
             }
 
             std::string writeError;
-            if (!TOOL::writeFileAtomic(target.path.string(), target.entry->data,
+            if (!TOOL::writeFileAtomic(TOOL::pathToUtf8(target.path), target.entry->data,
                                        writeError))
             {
                 err << "motear: " << writeError << "\n";
@@ -738,7 +747,8 @@ namespace
             }
         }
 
-        out << "extracted " << targets.size() << " entry(ies) to " << root.string()
+        out << "extracted " << targets.size() << " entry(ies) to "
+            << TOOL::pathToUtf8(root)
             << "\n";
         return 0;
     }

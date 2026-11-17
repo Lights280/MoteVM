@@ -146,6 +146,13 @@ namespace
                 error = "invalid instruction index '" + text + "'";
                 return false;
             }
+            // Check before multiplying: a dword index such as 2^30 would wrap
+            // to a small pc and silently alias a real instruction.
+            if (index >= module.image().codeCount)
+            {
+                error = "instruction index outside CODE";
+                return false;
+            }
             pc = index * ISA::INSTRUCTION_SIZE;
         }
         else
@@ -702,7 +709,9 @@ bool DEBUG::Session::dispatch(const Core &core, std::istringstream &line, dword 
         if (spec.size() > 1 && (spec[0] == 'r' || spec[0] == 'R'))
             spec.erase(0, 1);
         dword index = 0;
-        if (!parseNumber(spec, index) || index >= ISA::REGISTER_COUNT)
+        const dword limit =
+            std::min<dword>(currentRegisterCount(core, pc), ISA::REGISTER_COUNT);
+        if (!parseNumber(spec, index) || index >= limit)
         {
             diag_ << "error: invalid register '" << spec << "'\n";
             return true;
@@ -746,6 +755,11 @@ bool DEBUG::Session::dispatch(const Core &core, std::istringstream &line, dword 
             if (!parseNumber(number, value))
             {
                 diag_ << "error: invalid instruction address '" << startText << "'\n";
+                return true;
+            }
+            if (indexed && value >= DEBUG::codeCount(module_))
+            {
+                diag_ << "error: instruction index outside CODE\n";
                 return true;
             }
             start = indexed ? value * ISA::INSTRUCTION_SIZE : value;
@@ -877,16 +891,25 @@ void DEBUG::Session::printBacktrace(const Core &core, dword pc, std::ostream &ou
 void DEBUG::Session::printRegisters(const Core &core, dword pc, dword start, dword count,
                                     std::ostream &out) const
 {
-    (void)pc;
     const std::span<const StackFrame> frames = core.stack();
     if (frames.empty())
     {
         out << "no active frame\n";
         return;
     }
+    // Slots above the current function's register window were never
+    // initialized by CALL; reading them is undefined behaviour.
+    const dword limit =
+        std::min<dword>(currentRegisterCount(core, pc), ISA::REGISTER_COUNT);
+    if (start >= limit)
+    {
+        out << "no registers in range\n";
+        return;
+    }
+    count = std::min<dword>(count, limit - start);
     const std::array<dword, ISA::REGISTER_COUNT> &registers = frames.back().registers;
     bool first = true;
-    for (dword i = 0; i < count && start + i < ISA::REGISTER_COUNT; ++i)
+    for (dword i = 0; i < count; ++i)
     {
         if (!first)
             out << ' ';

@@ -11,6 +11,7 @@
 
 #include "archive/name.hpp"
 #include "archive/util.hpp"
+#include "common/path.hpp"
 #include "parse.hpp"
 
 namespace
@@ -50,14 +51,15 @@ namespace ARCHIVE
         lastError = OK;
         lastDetail.clear();
 
+        const std::filesystem::path filePath = TOOL::pathFromUtf8(path);
         std::error_code error;
-        const std::uintmax_t size = std::filesystem::file_size(path, error);
+        const std::uintmax_t size = std::filesystem::file_size(filePath, error);
         if (error)
             return lastError = FAIL_OPEN;
         if (size > static_cast<std::uintmax_t>(MAX_ARCHIVE_BYTES))
             return lastError = TOO_LARGE;
 
-        std::ifstream file(path, std::ios::binary);
+        std::ifstream file(filePath, std::ios::binary);
         if (!file)
             return lastError = FAIL_OPEN;
 
@@ -77,6 +79,9 @@ namespace ARCHIVE
         resetImage();
         lastError = OK;
         lastDetail.clear();
+        // Drop the previous image before a possible early return: otherwise a
+        // caller that ignores TOO_LARGE could parse the stale buffer.
+        buffer.clear();
         if (bytes.size() > static_cast<std::size_t>(MAX_ARCHIVE_BYTES))
             return lastError = TOO_LARGE;
         buffer.assign(bytes.begin(), bytes.end());

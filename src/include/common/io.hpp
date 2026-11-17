@@ -16,14 +16,16 @@ namespace TOOL
     bool readStdin(Bytes &data, std::string &error,
                    std::uintmax_t maxBytes = NO_READ_LIMIT);
 
-    // Writes bytes to path through a same-directory temporary file and an
-    // atomic replacement. On failure the temporary file is removed and the
-    // destination is left untouched (plan/05 §6.3 step 7).
+    // Writes bytes to path through a same-directory temporary file with a
+    // process-unique name and an atomic replacement. On failure the temporary
+    // file is removed and the destination is left untouched (plan/05 §6.3
+    // step 7). This is not crash-durable (no fsync) and does not preserve the
+    // target's permissions.
     bool writeFileAtomic(const std::string &path, std::span<const byte> data, std::string &error);
 
     // Writes raw bytes to stdout (no text translation).
     bool writeStdout(std::span<const byte> data, std::string &error);
 
-    // Switches stdin/stdout to binary mode on Windows.
-    void setBinaryStdio(void);
+    // Switches stdin/stdout to binary mode on Windows; false on failure.
+    bool setBinaryStdio(void);
 }

@@ -1,7 +1,9 @@
 #include "common/io.hpp"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -9,10 +11,15 @@
 #include <iostream>
 #include <system_error>
 
+#include "common/path.hpp"
+
 #if defined(_WIN32)
 #include <fcntl.h>
 #include <io.h>
+#include <process.h>
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace
@@ -20,6 +27,21 @@ namespace
     std::string systemMessage(const std::error_code &error)
     {
         return error ? error.message() : std::string("unknown error");
+    }
+
+    unsigned long currentProcessId(void)
+    {
+#if defined(_WIN32)
+        return static_cast<unsigned long>(::_getpid());
+#else
+        return static_cast<unsigned long>(::getpid());
+#endif
+    }
+
+    std::uint64_t nextTemporaryId(void)
+    {
+        static std::atomic<std::uint64_t> counter{0};
+        return counter.fetch_add(1, std::memory_order_relaxed);
     }
 
     std::string errnoMessage(int code)
@@ -38,8 +60,9 @@ bool TOOL::readFile(const std::string &path, Bytes &data, std::string &error,
                     std::uintmax_t maxBytes)
 {
     data.clear();
+    const std::filesystem::path filePath = pathFromUtf8(path);
     std::error_code code;
-    const std::uintmax_t size = std::filesystem::file_size(path, code);
+    const std::uintmax_t size = std::filesystem::file_size(filePath, code);
     if (code)
     {
         error = "cannot read '" + path + "': " + systemMessage(code);
@@ -56,7 +79,7 @@ bool TOOL::readFile(const std::string &path, Bytes &data, std::string &error,
         return false;
     }
 
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(filePath, std::ios::binary);
     if (!file)
     {
         error = "cannot open '" + path + "'";
@@ -112,14 +135,17 @@ bool TOOL::readStdin(Bytes &data, std::string &error, std::uintmax_t maxBytes)
 
 bool TOOL::writeFileAtomic(const std::string &path, std::span<const byte> data, std::string &error)
 {
-    const std::filesystem::path target(path);
+    const std::filesystem::path target = pathFromUtf8(path);
+    // Unique per process/call. The old fixed "<target>.tmp" could name one of
+    // the caller's inputs and was removed before writing (silent data loss).
+    // Note: this is atomic in the "no half-written destination" sense only;
+    // it does not fsync, and replacing an existing file adopts the temporary
+    // file's permissions (see plan/fix C-02/A-06).
     std::filesystem::path temporary = target;
-    temporary += ".tmp";
+    temporary += pathFromUtf8(".tmp." + std::to_string(currentProcessId()) + "." +
+                              std::to_string(nextTemporaryId()));
 
     std::error_code code;
-    std::filesystem::remove(temporary, code);
-    code.clear();
-
     {
         std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
         if (!file)
@@ -174,10 +200,12 @@ bool TOOL::writeStdout(std::span<const byte> data, std::string &error)
     return true;
 }
 
-void TOOL::setBinaryStdio(void)
+bool TOOL::setBinaryStdio(void)
 {
 #if defined(_WIN32)
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
+    return _setmode(_fileno(stdin), _O_BINARY) != -1 &&
+           _setmode(_fileno(stdout), _O_BINARY) != -1;
+#else
+    return true;
 #endif
 }

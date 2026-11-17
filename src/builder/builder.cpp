@@ -579,12 +579,71 @@ namespace BUILD
                    configName(options.config);
         }
 
+        // Remove C/C++ comments so a macro mentioned in documentation cannot be
+        // mistaken for its definition.
+        std::string stripComments(const std::string &text)
+        {
+            std::string out;
+            out.reserve(text.size());
+            bool block = false;
+            bool string = false;
+            char quote = '"';
+            for (std::size_t i = 0; i < text.size(); ++i)
+            {
+                const char current = text[i];
+                if (block)
+                {
+                    if (current == '*' && i + 1 < text.size() && text[i + 1] == '/')
+                    {
+                        block = false;
+                        ++i;
+                    }
+                    else if (current == '\n')
+                        out.push_back('\n');
+                    continue;
+                }
+                if (string)
+                {
+                    out.push_back(current);
+                    if (current == '\\' && i + 1 < text.size())
+                        out.push_back(text[++i]);
+                    else if (current == quote)
+                        string = false;
+                    continue;
+                }
+                if (current == '"' || current == '\'')
+                {
+                    string = true;
+                    quote = current;
+                    out.push_back(current);
+                    continue;
+                }
+                if (current == '/' && i + 1 < text.size() && text[i + 1] == '/')
+                {
+                    while (i < text.size() && text[i] != '\n')
+                        ++i;
+                    if (i < text.size())
+                        out.push_back('\n');
+                    continue;
+                }
+                if (current == '/' && i + 1 < text.size() && text[i + 1] == '*')
+                {
+                    block = true;
+                    ++i;
+                    continue;
+                }
+                out.push_back(current);
+            }
+            return out;
+        }
+
         std::string readDefineValue(const Path &header, const std::string &name)
         {
             std::string text;
             if (!readTextFile(header, text))
                 return "unknown";
-            std::istringstream input(text);
+            const std::string stripped = stripComments(text);
+            std::istringstream input(stripped);
             std::string line;
             while (std::getline(input, line))
             {
@@ -3405,12 +3464,18 @@ namespace BUILD
             if (option == 'j')
             {
                 std::string value = argument.substr(i + 1);
-                if (!value.empty() && value.front() == '=')
+                const bool explicitValue = !value.empty();
+                if (explicitValue && value.front() == '=')
                     value.erase(0, 1);
-                if (value.empty() && !takeValue(value))
+                if (value.empty())
                 {
-                    error = "option '-j' needs a positive integer";
-                    return false;
+                    // "-j=" is an explicit empty value (same rule as --jobs=);
+                    // only bare "-j" consumes the next token.
+                    if (explicitValue || !takeValue(value))
+                    {
+                        error = "option '-j' needs a positive integer";
+                        return false;
+                    }
                 }
                 if (!parsePositiveInt(value, options_.jobs))
                 {

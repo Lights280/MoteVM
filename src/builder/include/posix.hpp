@@ -113,8 +113,14 @@ namespace BUILD
                 return true;
 
             const int code = errno;
-            (void)::kill(pid, SIGKILL);
-            (void)::waitpid(pid, &status, 0);
+            // ECHILD means this process has no such child any more (another
+            // reaper got it), so the pid must not be signalled: it may already
+            // belong to an unrelated process.
+            if (code != ECHILD)
+            {
+                (void)::kill(pid, SIGKILL);
+                (void)::waitpid(pid, &status, 0);
+            }
             error = processErrorText("waitpid failed", code);
             return false;
         }
@@ -426,7 +432,7 @@ namespace BUILD
             {
                 if (fd_ >= 0)
                     return true;
-                const int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
+                const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
                 if (fd < 0)
                 {
                     const int code = errno;
